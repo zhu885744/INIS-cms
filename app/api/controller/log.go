@@ -49,6 +49,8 @@ const (
 	logMaxPage = 200
 	// logMaxLineSize - 单行最大字节数（日志字段可能很长）
 	logMaxLineSize = 2 * 1024 * 1024
+	// logMaxFieldKeys - 表格动态列上限（日志字段种类可能很多，只取出现最多的前 N 个）
+	logMaxFieldKeys = 24
 )
 
 // logDateAllow - 允许的日期目录名
@@ -243,7 +245,8 @@ func (this *Log) read(ctx *gin.Context) {
 			this.json(ctx, gin.H{
 				"scope": scope, "date": cast.ToString(params["date"]), "file": cast.ToString(params["file"]),
 				"list": []any{}, "total": 0, "lines": 0, "pages": 0, "page": 1, "limit": 50,
-				"levels": map[string]int{"debug": 0, "info": 0, "warn": 0, "error": 0, "other": 0},
+				"levels":    map[string]int{"debug": 0, "info": 0, "warn": 0, "error": 0, "other": 0},
+				"file_size": 0, "first_time": "", "last_time": "", "field_keys": []any{},
 				"truncated": false, "empty": true,
 			}, facade.Lang(ctx, "该日志文件不存在或已被清理！"), 200)
 			return
@@ -253,9 +256,19 @@ func (this *Log) read(ctx *gin.Context) {
 	}
 	defer file.Close()
 
+	// 文件级元信息：后台表格上方要展示「多大 / 覆盖哪段时间」
+	fileSize := int64(0)
+	if info, statErr := file.Stat(); statErr == nil {
+		fileSize = info.Size()
+	}
+
 	items := make([]facade.H, 0, 256)
 	levels := map[string]int{"debug": 0, "info": 0, "warn": 0, "error": 0, "other": 0}
 	total, lines, truncated := 0, 0, false
+	// 日志时间范围（只统计解析出 time 的行；同格式字符串可直接比较）
+	firstTime, lastTime := "", ""
+	// 业务字段出现次数：表格据此动态生成列（cost / ip / method / path / params …）
+	fieldCounts := map[string]int{}
 
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 0, 64*1024), logMaxLineSize)
@@ -273,7 +286,17 @@ func (this *Log) read(ctx *gin.Context) {
 			continue
 		}
 
-		item := this.parseLine(scope, raw)
+		item := this.parseLine(scope, raw, lines)
+
+		// 时间范围针对整个文件（不受过滤影响）
+		if timeText := cast.ToString(item["time"]); timeText != "" {
+			if firstTime == "" || timeText < firstTime {
+				firstTime = timeText
+			}
+			if timeText > lastTime {
+				lastTime = timeText
+			}
+		}
 
 		// 级别统计针对整个文件（不受过滤影响），便于前端一眼看出各级别数量
 		if index, ok := levels[cast.ToString(item["level"])]; ok {
@@ -290,7 +313,34 @@ func (this *Log) read(ctx *gin.Context) {
 		}
 
 		total++
+
+		// 动态字段列：只统计通过筛选的行，保证列与当前列表一致
+		if fields, ok := item["fields"].(map[string]any); ok {
+			for key := range fields {
+				fieldCounts[key]++
+			}
+		}
+
 		items = append(items, item)
+	}
+
+	// 字段列排序：出现次数多的在前，次数相同按字段名字母序（保证翻页时列顺序稳定）
+	fieldKeys := make([]facade.H, 0, len(fieldCounts))
+	keys := make([]string, 0, len(fieldCounts))
+	for key := range fieldCounts {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if fieldCounts[keys[i]] != fieldCounts[keys[j]] {
+			return fieldCounts[keys[i]] > fieldCounts[keys[j]]
+		}
+		return keys[i] < keys[j]
+	})
+	if len(keys) > logMaxFieldKeys {
+		keys = keys[:logMaxFieldKeys]
+	}
+	for _, key := range keys {
+		fieldKeys = append(fieldKeys, facade.H{"key": key, "count": fieldCounts[key]})
 	}
 
 	// 日志文件本身是时间正序，默认倒过来「最新在前」
@@ -312,10 +362,14 @@ func (this *Log) read(ctx *gin.Context) {
 		limit = logMaxPage
 	}
 
-	start, end := (page-1)*limit, page*limit
-	if start > len(items) {
+	// 先算 start、再算 end（而不是 page*limit）：
+	// page 被传成极大值时 (page-1)*limit 可能溢出成负数，直接切片会 panic，
+	// 这里统一夹到 [0, len(items)]，越界页返回空列表
+	start := (page - 1) * limit
+	if start < 0 || start > len(items) {
 		start = len(items)
 	}
+	end := start + limit
 	if end > len(items) {
 		end = len(items)
 	}
@@ -337,6 +391,12 @@ func (this *Log) read(ctx *gin.Context) {
 		"limit":     limit,
 		"levels":    levels,
 		"truncated": truncated,
+		// 表格上方的文件信息：体积 + 覆盖的时间范围
+		"file_size":  fileSize,
+		"first_time": firstTime,
+		"last_time":  lastTime,
+		// 动态列：[{key, count}]，按出现次数降序
+		"field_keys": fieldKeys,
 	}, facade.Lang(ctx, "查询成功！"), 200)
 }
 
@@ -398,7 +458,8 @@ func (this *Log) notifyFiles() []facade.H {
 // 系统日志（zap JSON）取 time/level/msg/caller，其余键进 fields；
 // 通知日志（文本）解析 [时间] [状态] 类型 | k: v；
 // 都不匹配时只保留 raw，保证「任何一行都能看到原文」。
-func (this *Log) parseLine(scope string, raw string) facade.H {
+// lineNo 为该行在文件中的行号（表格里用于定位，跳转/对照原始文件都靠它）。
+func (this *Log) parseLine(scope string, raw string, lineNo int) facade.H {
 
 	if scope == logScopeSystem {
 
@@ -415,6 +476,7 @@ func (this *Log) parseLine(scope string, raw string) facade.H {
 				}
 
 				return facade.H{
+					"line":   lineNo,
 					"time":   cast.ToString(values["time"]),
 					"level":  strings.ToLower(cast.ToString(values["level"])),
 					"msg":    cast.ToString(values["msg"]),
@@ -425,7 +487,7 @@ func (this *Log) parseLine(scope string, raw string) facade.H {
 			}
 		}
 
-		return facade.H{"level": "", "fields": map[string]any{}, "raw": raw}
+		return facade.H{"line": lineNo, "level": "", "fields": map[string]any{}, "raw": raw}
 	}
 
 	// 通知日志：[2026-10-10 19:49:47] [成功] email | k: v | k: v
@@ -450,6 +512,7 @@ func (this *Log) parseLine(scope string, raw string) facade.H {
 		}
 
 		return facade.H{
+			"line":   lineNo,
 			"time":   match[1],
 			"level":  level,
 			"msg":    match[3],
@@ -459,5 +522,5 @@ func (this *Log) parseLine(scope string, raw string) facade.H {
 		}
 	}
 
-	return facade.H{"level": "", "fields": map[string]any{}, "raw": raw}
+	return facade.H{"line": lineNo, "level": "", "fields": map[string]any{}, "raw": raw}
 }
