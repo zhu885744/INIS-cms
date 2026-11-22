@@ -169,7 +169,10 @@ func storageTomlContent() string {
 		"${cos.dir_rule}":    DefaultStorageDirRule,
 		"${cos.file_rule}":   DefaultStorageFileRule,
 		// 图片（含 avif / heic）、视频、压缩包、文档、文本
-		"${attachment.allow_extensions}": "jpg,jpeg,jfif,png,apng,gif,webp,bmp,svg,ico,tif,tiff,avif,heic,heif,mp4,m4v,mov,webm,mkv,avi,flv,wmv,3gp,mpg,mpeg,ogv,zip,rar,7z,tar,gz,tgz,bz2,tbz2,xz,txz,pdf,doc,docx,xls,xlsx,ppt,pptx,csv,txt,md",
+		// 不含 tif / tiff：imaging 处理 TIFF 有已知越界漏洞且上游无修复版本，
+		// 默认不允许上传（已有站点若要放开，请在 storage.toml 自行添加，
+		// 动态缩略图入口仍会按扩展名回原图，不会走到解码逻辑）
+		"${attachment.allow_extensions}": "jpg,jpeg,jfif,png,apng,gif,webp,bmp,svg,ico,avif,heic,heif,mp4,m4v,mov,webm,mkv,avi,flv,wmv,3gp,mpg,mpeg,ogv,zip,rar,7z,tar,gz,tgz,bz2,tbz2,xz,txz,pdf,doc,docx,xls,xlsx,ppt,pptx,csv,txt,md",
 		"${attachment.max_file_size}":    51200,
 		"${attachment.concurrent_limit}": 5,
 	})

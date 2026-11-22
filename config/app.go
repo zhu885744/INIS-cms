@@ -480,6 +480,18 @@ func handleImageFile(ctx *gin.Context, path, ext string, writeImage func(string,
 		return
 	}
 
+	// TIFF 不走动态处理，直接回原图。
+	//
+	// 原因：github.com/disintegration/imaging 对 TIFF 的灰度扫描存在越界 panic
+	// （crafted TIFF → Grayscale 时 integer index out of range），上游已停止维护、
+	// 没有修复版本（Dependabot 报的 Patched version: None 就是它）。
+	// 这里在解码之前拦掉，既绕开漏洞，也省掉一次昂贵的 TIFF 解码；
+	// 浏览器自己渲染 TIFF 原图不经过 Go 进程，不受影响。
+	if ext == "tif" || ext == "tiff" {
+		writeImage(path, ext)
+		return
+	}
+
 	reg := regexp.MustCompile(`^(\d+)\D+(\d+)$`)
 	match := reg.FindStringSubmatch(ctx.Query("size"))
 
