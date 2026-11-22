@@ -430,6 +430,10 @@ const (
 	chatPatInterval int64 = 5
 	// chatPatSuffixMax - 拍一拍后缀最大字符数（如「的后脑勺」）
 	chatPatSuffixMax = 20
+	// chatMaxConversations - 未读总数 / 会话列表统一只看最近这么多个会话，
+	// 保证「未读总数」与「列表里能点开的会话」口径一致：
+	// 否则超出列表范围的会话未读会计入总数，用户却找不到入口去清，角标永远挂着。
+	chatMaxConversations = 200
 )
 
 // ChatPermission - 私信发送权限（唯一的判定入口）
@@ -909,6 +913,10 @@ func (this *ChatMessages) UnreadTotal(uid int) int64 {
 		return 0
 	}
 
+	// 统计全部会话（不加 Limit）：列表一次最多展示 chatMaxConversations 个，
+	// 但角标必须反映真实未读 —— 之前跟列表同口径取前 200 个会话，
+	// 结果"总数 67、列表里找不到对应会话"，用户点遍所有会话也清不掉。
+	// 列表外那些未读统一由「一键已读」（MarkAllRead）兜底清零。
 	var ids []int
 	if err := facade.DB.Drive().Model(&ChatConversations{}).
 		Where("uid = ? OR target_uid = ?", uid, uid).
@@ -916,11 +924,68 @@ func (this *ChatMessages) UnreadTotal(uid int) int64 {
 		return 0
 	}
 
-	count, _ := facade.DB.Model(&ChatMessages{}).
+	// 必须走原生 gorm（Drive）：facade.ModelStruct.Where 只认「字段 + 操作符 + 值」，
+	// 传原生 SQL 片段会被 sanitizeColumn 判为非法字段 → 条件被静默丢弃 →
+	// Count 变成全表统计，删除自己的未读后数字也不会变（表现为「67 条永远清不掉」）。
+	var count int64
+	_ = facade.DB.Drive().Model(&ChatMessages{}).
 		Where("receive_uid = ? AND is_read = 0 AND conversation_id IN ?", uid, ids).
 		Where("id NOT IN (?)", chatHiddenQuery(uid)).
-		Count()
+		Count(&count)
 	return count
+}
+
+// chatReadReceipt - 批量已读后要通知对方的一条回执
+type chatReadReceipt struct {
+	TargetUid int
+	LastMsgId int
+}
+
+// MarkAllRead - 把所有会话里「发给我的未读消息」一次性标为已读
+//
+// 用途：会话列表里已经没有入口的那些未读（对方账号异常、会话被清理但消息还在等），
+// 逐个点开永远清不掉，需要一个兜底入口把角标归零。
+//
+// 返回：本次标记的条数，以及每个对方「读到的最后一条消息 id」，
+// 调用方据此给对方推已读回执，否则对方界面上的「已读」不会亮。
+func (this *ChatMessages) MarkAllRead(uid int) (int64, []chatReadReceipt) {
+
+	if uid <= 0 {
+		return 0, nil
+	}
+
+	db := facade.DB.Drive()
+
+	// 回执按「发送者」分组取最后一条，不查会话表：
+	// 会话列表只展示最近 chatMaxConversations 个，而一键已读必须把所有未读都清掉
+	// （包括列表里翻不到的历史会话），否则会出现「接口返回 updated=0，角标却还是 67」。
+	var rows []struct {
+		SendUid int
+		LastId  int
+	}
+	if err := db.Model(&ChatMessages{}).
+		Select("send_uid, MAX(id) AS last_id").
+		Where("receive_uid = ? AND is_read = 0", uid).
+		Group("send_uid").
+		Scan(&rows).Error; err != nil || len(rows) == 0 {
+		return 0, nil
+	}
+
+	tx := db.Model(&ChatMessages{}).
+		Where("receive_uid = ? AND is_read = 0", uid).
+		Updates(map[string]any{"is_read": 1, "read_time": time.Now().Unix()})
+	if tx.Error != nil {
+		return 0, nil
+	}
+
+	receipts := make([]chatReadReceipt, 0, len(rows))
+	for _, row := range rows {
+		if row.SendUid > 0 && row.LastId > 0 {
+			receipts = append(receipts, chatReadReceipt{TargetUid: row.SendUid, LastMsgId: row.LastId})
+		}
+	}
+
+	return tx.RowsAffected, receipts
 }
 
 // unreadByConversation - 我各个会话的未读数（一次 group by 取回，避免 N+1）
@@ -1045,8 +1110,8 @@ func (this *ChatConversations) ListMine(uid, limit int) []map[string]any {
 	// 多取一些再排序：置顶的会话可能已经很旧，如果只按 last_time 取前 limit 条，
 	// 它根本进不了候选集，「置顶」就失效了。会话总数通常远小于 4 倍上限。
 	fetchLimit := limit * 4
-	if fetchLimit > 200 {
-		fetchLimit = 200
+	if fetchLimit > chatMaxConversations {
+		fetchLimit = chatMaxConversations
 	}
 
 	var rows []ChatConversations
@@ -1146,9 +1211,11 @@ func (this *ChatMessages) ConversationUnread(uid, targetUid int) int64 {
 	if uid <= 0 || targetUid <= 0 {
 		return 0
 	}
-	count, _ := facade.DB.Model(&ChatMessages{}).
+	// 同 UnreadTotal：这里也是原生 SQL 片段，必须用 Drive() 而不是封装
+	var count int64
+	_ = facade.DB.Drive().Model(&ChatMessages{}).
 		Where("receive_uid = ? AND send_uid = ? AND is_read = 0", uid, targetUid).
 		Where("id NOT IN (?)", chatHiddenQuery(uid)).
-		Count()
+		Count(&count)
 	return count
 }

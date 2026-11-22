@@ -46,6 +46,16 @@
       </div>
     </header>
 
+    <!-- 实时连接被管理员关闭：一行轻提示，完整说明放 title -->
+    <p
+      v-if="!chatStore.available"
+      class="room-offline"
+      :title="`${chatStore.socketMessage || '站点已关闭实时连接'}，新消息不会自动推送，刷新页面查看最新内容。`"
+    >
+      <i class="bi bi-broadcast-pin" aria-hidden="true" />
+      <span>实时连接已关闭，新消息需刷新查看</span>
+    </p>
+
     <!-- 群公告：有公告时才出现，点击弹出全文（长公告不再撑高聊天区） -->
     <section
       v-if="room.notice"
@@ -662,7 +672,7 @@
 import FormTextarea from '@/components/form/FormTextarea.vue'
 import FormInput from '@/components/form/FormInput.vue'
 import FormSelect from '@/components/form/FormSelect.vue'
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import InviteDialog from './InviteDialog.vue'
 import {
@@ -1987,19 +1997,48 @@ function onRoomEvent(payload = {}) {
   }
 }
 
+/**
+ * 切换 / 进入房间时重置并加载
+ *
+ * 群聊之间切换（/chat/room/1 → /chat/room/2）时组件被复用，onMounted 不会再执行，
+ * 不主动重置就会出现「房间头、消息、成员全是上一间」的现象。
+ */
+async function switchRoom() {
+  // 作废在途的历史请求：epoch +1 后旧结果会被丢弃，别让它贴回新房间
+  historyEpoch += 1
+  loading.value = false
+  messages.value = []
+  hasMore.value = false
+  clearQuote()
+  typers.value = new Map()
+  typingTimers.forEach((timer) => clearTimeout(timer))
+  typingTimers.clear()
+  members.value = []
+  requests.value = []
+  noticeOpen.value = false
+  // 进了新群就说明已经看到 @：把私信列表入口上的红点重新计数
+  chatStore.clearRoomMentions()
+
+  // 先拿房间与成员身份：非成员不拉历史（后端会 403，前端也少一次无谓请求）
+  await loadInfo()
+  if (joined.value) await loadHistory(0)
+}
+
+// 监听房间 id：从列表点另一个群聊时路由参数变了但组件复用，需要重新拉一遍
+watch(roomId, (next, prev) => {
+  if (!next || next === prev) return
+  switchRoom()
+})
+
 // 禁言是「到点自动失效」的：页面开着时定期刷新一次状态，
 // 到期后输入框能自己恢复，不用手动刷新页面
 let infoTimer = null
 
 onMounted(async () => {
   chatStore.start()
-  // 进了房间就说明已经看到 @：把私信列表入口上的红点清掉
-  chatStore.clearRoomMentions()
   // 房间里被 @ 由本页 toast 提示，不再重复弹右下角浮层
   chatStore.setViewingRoom(true)
-  // 先拿房间与成员身份：非成员不拉历史（后端会 403，前端也少一次无谓请求）
-  await loadInfo()
-  if (joined.value) await loadHistory(0)
+  await switchRoom()
   unsubscribeEvent = chatStore.onEvent(onRoomEvent)
   // 后台标签页不刷新：这个轮询只是为了「禁言到点自动解除」，
   // 页面不可见时刷新没有意义（用户看不到），还会占一个连接与一次 QPS 计数
@@ -3300,5 +3339,32 @@ onBeforeUnmount(() => {
 .room-menu-item.is-danger:hover {
   color: var(--danger);
   background: var(--accent-soft);
+}
+/* 实时连接被管理员关闭时的提示条（群聊不再实时推送，只能刷新查看）
+ * 一行轻提示：中性底色、只有图标带一点警示色，完整说明在 title 里 */
+.room-offline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 12px 8px;
+  padding: 6px 10px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  background: var(--bg-muted);
+  /* 与群公告 / 输入框同一档圆角，不要自己造一个 8px 的「异类」 */
+  border-radius: var(--radius);
+}
+.room-offline span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.room-offline i {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--warning, #b8860b);
 }
 </style>

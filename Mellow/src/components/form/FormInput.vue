@@ -2,7 +2,7 @@
   <input
     ref="inputEl"
     class="input"
-    :class="{ 'is-invalid': invalid }"
+    :class="{ 'is-invalid': invalid, 'is-bare': variant === 'bare' }"
     :type="type"
     :value="current"
     :placeholder="placeholder"
@@ -42,6 +42,11 @@ const props = defineProps({
   readonly: { type: Boolean, default: false },
   // 校验失败态：只改边框色并由父级给 .form-error 文案
   invalid: { type: Boolean, default: false },
+  // 外观变体：
+  //   default  独立输入框（自带边框 / 底色 / 聚焦环，默认值）
+  //   bare     嵌在已有胶囊或描边容器里（如聊天页搜索框），
+  //            输入框本身不画边框和底色，焦点态由父容器的 :focus-within 承担
+  variant: { type: String, default: 'default' },
   // v-model 修饰符（.number / .trim）
   modelModifiers: { type: Object, default: () => ({}) }
 })
@@ -80,6 +85,33 @@ function onInput(event) {
 <style scoped>
 .input.is-invalid {
   border-color: var(--danger);
+}
+
+/* bare：外层已经有胶囊 / 描边的场景（如聊天页搜索框）。
+ * 这里把 .input 的边框、底色、内边距、圆角、聚焦环全部摘掉，
+ * 字号与颜色继承父容器，焦点态交由父容器 :focus-within 统一绘制。 */
+.input.is-bare {
+  height: auto;
+  padding: 0;
+  font-size: inherit;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  /* 三层都要清掉，否则聚焦时会叠出方角框：
+   *   outline        —— 全局 :focus-visible 的焦点基线
+   *   appearance     —— type=search / number 等原生控件自带的内框 */
+  outline: none;
+  appearance: none;
+  -webkit-appearance: none;
+}
+.input.is-bare:focus,
+.input.is-bare:focus-visible,
+.input.is-bare.is-invalid {
+  border-color: transparent;
+  box-shadow: none;
+  outline: none;
 }
 
 .input.is-invalid:focus {

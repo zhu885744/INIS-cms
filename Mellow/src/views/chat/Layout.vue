@@ -43,11 +43,18 @@
 
     <!-- ==================== 会话列表 ==================== -->
     <aside class="chat-side">
+      <!-- 实时连接被管理员关闭：一行轻提示，完整说明放到 title -->
+      <p v-if="!chatStore.available" class="chat-offline" :title="offlineTip">
+        <i class="bi bi-broadcast-pin" aria-hidden="true" />
+        <span>实时连接已关闭，新消息需刷新查看</span>
+      </p>
+
       <div class="chat-search-row">
         <label class="chat-search">
           <i class="bi bi-search" aria-hidden="true" />
           <FormInput
             v-model="keyword"
+            variant="bare"
             type="search"
             :placeholder="panel === 'contacts' ? '搜索好友 / 群聊' : '搜索'"
             :aria-label="panel === 'contacts' ? '搜索好友或群聊' : '搜索会话'" />
@@ -354,6 +361,12 @@ const route = useRoute()
 const router = useRouter()
 const chatStore = useChatStore()
 const userStore = useUserStore()
+
+// 实时连接关闭时的完整说明：提示条只显示一行，细节放 title
+const offlineTip = computed(
+  () =>
+    `${chatStore.socketMessage || '站点已关闭实时连接'}，新消息不会自动送达，刷新或重新进入会话即可查看。`
+)
 
 const hasActive = computed(() => !!(route.params.uid || route.params.id))
 
@@ -839,19 +852,28 @@ onBeforeUnmount(() => {
   min-width: 0;
   padding: 0 10px;
   height: 30px;
-  font-size: 12px;
-  color: var(--chat-text-weak);
+  /* 字号 / 颜色在这里统一：bare 输入框直接继承，不必各自再声明一遍 */
+  font-size: 12.5px;
+  color: var(--text);
   background: var(--bg-muted);
   border-radius: 6px;
 }
-.chat-search input {
+/* 放大镜保持弱色，输入文字用正文色 */
+.chat-search > i {
+  color: var(--chat-text-weak);
+}
+/* 输入框用 FormInput 的 bare 变体：边框 / 底色 / 聚焦环都不画，只负责撑开宽度 */
+.chat-search :deep(.input) {
   flex: 1;
   min-width: 0;
-  font-size: 12.5px;
-  color: var(--text);
-  background: transparent;
-  border: 0;
-  outline: none;
+}
+/* 聚焦态由外层胶囊承载：用 inset 描边，圆角完全跟着胶囊走，不会在外面再套一圈方框 */
+.chat-search {
+  transition: background-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+}
+.chat-search:focus-within {
+  background: var(--bg-card);
+  box-shadow: inset 0 0 0 1.5px var(--accent-ring);
 }
 .chat-add {
   display: grid;
@@ -1346,5 +1368,32 @@ onBeforeUnmount(() => {
     left: 12px;
     width: auto;
   }
+}
+/* 实时连接被管理员关闭（app.toml 的 [socket] enabled = false）时的提示条
+ * 与下方搜索框同款：左右 12px 对齐、6px 圆角、30px 高、同色底，
+ * 只有图标带一点警示色；完整说明在 title 里 */
+.chat-offline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 12px 12px 0;
+  padding: 0 10px;
+  height: 30px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  background: var(--bg-muted);
+  border-radius: 6px;
+}
+.chat-offline span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-offline i {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--warning, #b8860b);
 }
 </style>

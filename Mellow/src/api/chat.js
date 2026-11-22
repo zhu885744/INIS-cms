@@ -102,6 +102,10 @@ export const deleteChatMessage = (msgId) =>
 export const readChatMessages = (targetUid) =>
   call('chat', 'read', { method: 'PUT', data: { target_uid: Number(targetUid) } })
 
+// 把所有会话的未读私信一次性标为已读（兜底入口，通知页的「全部已读」用）
+export const readAllChatMessages = () =>
+  call('chat', 'read-all', { method: 'PUT' })
+
 // 撤回自己发的消息（仅 2 分钟内，服务端校验）
 export const revokeChatMessage = (msgId) =>
   call('chat', 'revoke', { method: 'POST', data: { msg_id: Number(msgId) } })

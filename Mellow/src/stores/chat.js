@@ -1,8 +1,8 @@
 import { reactive, ref } from 'vue'
 import { defineStore } from 'pinia'
-import { createSocketClient } from '@/utils/socket'
+import { createSocketClient, probeSocket } from '@/utils/socket'
 import { playNoticeSound } from '@/utils/noticeSound'
-import { ackChatMessages, getChatUnread } from '@/api/chat'
+import { ackChatMessages, getChatUnread, readAllChatMessages } from '@/api/chat'
 import { useUserStore } from './user'
 
 // ACK 批量上报的合并窗口（毫秒）：连收多条消息只上报一次最大的 seq
@@ -37,6 +37,13 @@ export const useChatStore = defineStore('chat', () => {
   const unread = ref(0)
   // WebSocket 是否已连上（聊天页的在线提示用，不代表对方在线）
   const connected = ref(false)
+  // 服务端是否开放实时连接（config/app.toml 的 [socket] enabled）
+  //
+  // false 表示管理员一键关闭了 socket：此时不建连、不重连，页面给出明确提示；
+  // 私信 / 群聊仍然可用，只是新消息不会实时推下来，需要刷新或进会话时重新拉取。
+  const available = ref(true)
+  // 关闭时的提示文案（取服务端返回的 msg，兜底「站点已关闭实时连接」）
+  const socketMessage = ref('')
   // 最近一条收到的消息
   const incoming = ref(null)
 
@@ -76,6 +83,8 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   let client = null
+  // start() 防重入：探测是异步的，App.vue 与聊天页几乎同时调用会重复建连
+  let starting = false
   // 是否已经连上过一次：用来区分「首次连接」与「断线重连」（重连才需要补拉）
   let hasOpened = false
   // 未读数校准请求的序号：并发时只认最后一次的结果。
@@ -389,6 +398,23 @@ export const useChatStore = defineStore('chat', () => {
     unread.value = value
   }
 
+  /**
+   * 把所有私信标为已读（通知页的兜底入口）
+   *
+   * 用于「会话列表里已经没有入口、角标却一直挂着」的未读：
+   * 服务端会把当前所有会话里的未读消息一次性置为已读，并带回新的总数。
+   */
+  async function readAll() {
+    try {
+      const res = await readAllChatMessages()
+      if (res?.code !== 200) return false
+      setUnread(Number(res.data?.unread || 0))
+      return true
+    } catch {
+      return false
+    }
+  }
+
   /** 告知当前正在查看的会话（0 = 不在任何会话里），这段对话的新消息不计未读 */
   function setViewing(peerUid) {
     viewingUid = Number(peerUid) || 0
@@ -423,6 +449,14 @@ export const useChatStore = defineStore('chat', () => {
         count: Number(content.online_count) || users.length,
         users: [...seen.values()]
       }
+      return
+    }
+
+    // 站内通知：服务端创建通知后实时推送（单播 notification / 广播 notification_all）。
+    // 这里只把「有新通知」这件事转出去，具体刷新交给订阅方（侧栏、通知页），
+    // 不维护第二套未读状态，避免与 notification/unread-count 对不上。
+    if (payload.type === 'notification' || payload.type === 'notification_all') {
+      emitEvent({ type: 'notification', item: payload.data || {} })
       return
     }
 
@@ -533,27 +567,39 @@ export const useChatStore = defineStore('chat', () => {
     })
   }
 
-  /** 建立连接（幂等：已连接直接返回） */
-  function start() {
+  /** 建立连接（幂等：已连接 / 正在建连直接返回） */
+  async function start() {
     const userStore = useUserStore()
     if (!userStore.isLogged) return
-    if (client) return
+    if (client || starting) return
 
-    client = createSocketClient({
-      onState: (state) => {
-        const opened = state === 'open'
-        connected.value = opened
-        if (!opened) return
-        // 重连：把离线期间没能上报的 ACK 先补一遍；
-        // 再通知订阅方（聊天页）按本地最大 seq 做一次增量补拉，补回断线期间漏掉的消息
-        flushPendingAcks()
-        if (hasOpened) emitEvent({ type: 'reconnect' })
-        hasOpened = true
-      },
-      onMessage: handleSocketMessage
-    })
-    client.connect()
-    refresh()
+    starting = true
+    try {
+      // 服务端可能一键关闭了实时连接（config/app.toml 的 [socket] enabled = false）：
+      // 先探测一次，避免前端陷入「无限重连」并把页面误报成网络 / 代理故障
+      const probe = await probeSocket()
+      available.value = probe.available
+      socketMessage.value = probe.message
+      if (!probe.available) return
+
+      client = createSocketClient({
+        onState: (state) => {
+          const opened = state === 'open'
+          connected.value = opened
+          if (!opened) return
+          // 重连：把离线期间没能上报的 ACK 先补一遍；
+          // 再通知订阅方（聊天页）按本地最大 seq 做一次增量补拉，补回断线期间漏掉的消息
+          flushPendingAcks()
+          if (hasOpened) emitEvent({ type: 'reconnect' })
+          hasOpened = true
+        },
+        onMessage: handleSocketMessage
+      })
+      client.connect()
+      refresh()
+    } finally {
+      starting = false
+    }
   }
 
   /**
@@ -565,6 +611,8 @@ export const useChatStore = defineStore('chat', () => {
   function reconnect() {
     const userStore = useUserStore()
     if (!userStore.isLogged) return
+    // 服务端一键关闭了实时连接：重连没有意义，保留页面上的提示即可
+    if (!available.value) return
     if (!client) {
       start()
       return
@@ -596,11 +644,17 @@ export const useChatStore = defineStore('chat', () => {
     connected.value = false
     unread.value = 0
     incoming.value = null
+    // 下次登录重新探测（管理员可能在这期间又打开了 socket）
+    available.value = true
+    socketMessage.value = ''
   }
 
   return {
     unread,
     connected,
+    // 服务端是否开放实时连接（关闭时页面据此显示提示）
+    available,
+    socketMessage,
     incoming,
     onMessage,
     onEvent,
@@ -617,6 +671,8 @@ export const useChatStore = defineStore('chat', () => {
     consumeUnread,
     // 用服务端返回的总数覆盖（标已读接口顺带返回）
     setUnread,
+    // 所有私信标为已读（通知页兜底入口）
+    readAll,
     // 正在查看的会话：这段对话的新消息不计入角标
     setViewing,
     // 是否停留在群聊（房间里不重复弹 @ 通知）

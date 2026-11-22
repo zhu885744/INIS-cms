@@ -126,10 +126,11 @@
 </template>
 
 <script setup>
-import { computed, reactive, ref, watch, onMounted } from 'vue'
+import { computed, reactive, ref, watch, onMounted, onUnmounted } from 'vue'
 import { useUserStore } from '@/stores/user'
 import { useNotificationStore } from '@/stores/notification'
 import { useSiteStore } from '@/stores/site'
+import { useChatStore } from '@/stores/chat'
 import { getArticleGroups } from '@/api/article'
 import { call } from '@/api/request'
 import { normalizeSidebarConfig } from '@/utils/sidebar'
@@ -164,6 +165,7 @@ import SidebarHtmlCard from '@/components/sidebar/SidebarHtmlCard.vue'
 const userStore = useUserStore()
 const notif = useNotificationStore()
 const siteStore = useSiteStore()
+const chat = useChatStore()
 
 /* ---------------- 配置 ---------------- */
 const sidebar = computed(() => normalizeSidebarConfig(siteStore.config?.sidebar))
@@ -403,17 +405,44 @@ watch(
   { immediate: true }
 )
 
+// 站内通知现在走 WebSocket 推送（见 stores/chat.js 的 notification 分支）：
+// socket 可用时不轮询，只有被管理员关闭（chat.available = false）时才退回 60 秒兜底
+function syncNotifyPolling() {
+  if (!userStore.isLogged) {
+    notif.stopPolling()
+    return
+  }
+  if (chat.available) notif.stopPolling()
+  else notif.startPolling()
+}
+
 watch(
   () => userStore.isLogged,
   (v) => {
-    if (v) notif.startPolling()
-    else notif.stopPolling()
+    if (v) notif.refresh()
+    syncNotifyPolling()
   }
 )
 
+// socket 被关闭 / 恢复时切换兜底轮询
+watch(() => chat.available, () => syncNotifyPolling())
+
+// 收到服务端推送的「有新通知」：刷新角标与最新一条
+let unsubscribeNotify = null
+
 onMounted(() => {
   if (!siteStore.loaded) siteStore.load()
-  if (userStore.isLogged) notif.startPolling()
+  if (userStore.isLogged) {
+    notif.refresh()
+    syncNotifyPolling()
+  }
+  unsubscribeNotify = chat.onEvent((event) => {
+    if (event?.type === 'notification') notif.refresh()
+  })
+})
+
+onUnmounted(() => {
+  if (unsubscribeNotify) unsubscribeNotify()
 })
 </script>
 

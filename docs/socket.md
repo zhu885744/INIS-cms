@@ -11,6 +11,25 @@
 | 前端封装 | `Mellow/src/utils/socket.js`（`createSocketClient`，断线自动重连，退避 1s→20s） |
 | 后台页面 | 「管理 → 数据统计」`/admin/stats`（`Mellow/src/views/admin/Stats.vue`） |
 
+### 总开关（一键关闭）
+
+`config/app.toml`：
+
+```toml
+[socket]
+enabled = true    # false = 关闭实时连接
+```
+
+| 行为 | 说明 |
+| :--- | :--- |
+| 关闭后的响应 | `/socket` 不再升级，直接返回 `503 {"code":503,"msg":"站点已关闭实时连接","data":{"socket":false}}`（`Cache-Control: no-store`） |
+| 老配置文件 | 没有 `enabled` 项时按 `true` 处理，升级后无需改配置即可继续使用 |
+| 前端如何判断 | `Mellow/src/utils/socket.js` 的 `probeSocket()` 先用一次普通 HTTP 请求探测；拿到 503 就停用实时功能并显示提示，**不会**陷入无限重连 |
+| 受影响 | 私信 / 群聊的实时推送、群聊在线人数、后台「数据统计」的实时曲线（页面显示「实时连接已关闭」） |
+| 不受影响 | 私信 / 群聊本身（历史、发送、已读都走 HTTP，刷新即可看到新消息）、其它后台功能 |
+
+实现位置：开关判断在 `app/socket/route/app.go` 的路由注册阶段；关闭时 Hub 的后台 goroutine 仍然运行（空转开销极小），只是不再接受新连接。
+
 ### 连接建立与准入
 
 握手路径 `GET /socket`（`/socket/` 等价），中间件链 `api/middleware.Auth()` → `socket/middleware.App`：
@@ -55,9 +74,18 @@
 | `chat_typing` | 服务端 → 客户端 | `{ type, to, data: { from_uid } }` | 被私聊的一方（含多端） |
 | `room_typing` | 服务端 → 全部 | `{ type, data: { uid } }` | 所有人（前端按 uid 过滤自己） |
 | `chat_mention` | 服务端 → 客户端 | `{ type, to, data: { room_id, message_id, from_uid, preview } }` | 被 @ 的人（含多端） |
+| `notification` | 服务端 → 客户端 | `{ type, to, data: { id, uid, type, title, content, bind_type, bind_id, create_time } }` | 通知接收者（仅在线） |
+| `notification_all` | 服务端 → 全部 | 同上，`data.uid = 0` | 所有在线连接（广播通知） |
 
 `chat_typing` / `room_typing` / `chat_mention` 都是**一次性瞬时事件**：服务端不落库、不进离线缓存，
 只投给当前在线的连接（见 `dispatch` 的 `chat_typing` 分支与 `room*` 广播分支）。
+
+`notification` / `notification_all` 是**站内通知的实时提醒**：`model.CreateNotification`、
+`CreateAggregateNotification`、`CreateBroadcastNotification` 落库成功后通过注入的
+`model.PushNotification` 推送（注入点在 `app/socket/controller/chat.go` 的 init）。
+它只负责「告诉在线用户有新通知」，前端收到后统一走 `notification/unread-count` +
+`notification/list` 刷新，不在推送里维护第二套未读状态；离线用户进页面拉取同样能看到。
+socket 被关闭（`[socket] enabled = false`）时前端自动退回 60 秒轮询兜底。
 `online_users` 里的 `uid` 是登录用户 id（访客为 0），跨域场景下连接 id 仍是 `guest_xxx`，
 前端要用 `uid` 区分「这是哪位登录用户」，不要看 id 前缀。
 

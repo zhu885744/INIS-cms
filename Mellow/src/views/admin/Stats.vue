@@ -17,7 +17,11 @@
             <i class="bi" :class="connIcon" />
             {{ connText }}
           </span>
-          <button class="btn btn-sm" :disabled="connection === 'connecting'" @click="reconnect">
+          <button
+            class="btn btn-sm"
+            :disabled="connection === 'connecting' || connection === 'disabled'"
+            @click="reconnect"
+          >
             <i class="bi bi-arrow-repeat" /> 重新连接
           </button>
           <button class="btn btn-sm" @click="paused = !paused">
@@ -28,20 +32,36 @@
       </header>
 
       <div v-if="!ready" class="offline-tip">
-        <i class="bi" :class="connection === 'failed' ? 'bi-exclamation-triangle' : 'bi-plug'" />
+        <i class="bi" :class="connIcon" />
         <div>
           <p class="offline-title">
-            {{ connection === 'failed' ? '自动重连已停止' : '尚未收到实时数据' }}
+            {{
+              connection === 'disabled'
+                ? '实时连接已被管理员关闭'
+                : connection === 'failed'
+                  ? '自动重连已停止'
+                  : '尚未收到实时数据'
+            }}
           </p>
-          <p class="offline-desc">
-            请确认：① 当前账号是管理员（系统状态仅推送给管理员）；② 反向代理已放通
-            <code>/socket</code> 的 WebSocket 升级（Nginx 需要 <code>Upgrade</code> /
-            <code>Connection: upgrade</code> 头）；③ 本地开发时 <code>vite.config.js</code> 已代理
-            <code>/socket</code>。
+
+          <!-- 被管理员一键关闭：给出明确的开关位置，不要让人去排查代理 -->
+          <p v-if="connection === 'disabled'" class="offline-desc">
+            {{ socketDisabled }}。需要实时数据时，请在服务器 <code>config/app.toml</code> 的
+            <code>[socket]</code> 段把 <code>enabled</code> 改为 <code>true</code> 并重启后端；
+            本页的告警阈值设置走 HTTP 接口，不受影响。
           </p>
-          <p v-if="connection === 'failed'" class="offline-desc">
-            已连续失败，自动重连已停止以避免刷屏；修复配置后点上方「重新连接」即可。
-          </p>
+
+          <template v-else>
+            <p class="offline-desc">
+              请确认：① 当前账号是管理员（系统状态仅推送给管理员）；② 反向代理已放通
+              <code>/socket</code> 的 WebSocket 升级（Nginx 需要 <code>Upgrade</code> /
+              <code>Connection: upgrade</code> 头）；③ 本地开发时 <code>vite.config.js</code> 已代理
+              <code>/socket</code>。
+            </p>
+            <p v-if="connection === 'failed'" class="offline-desc">
+              已连续失败，自动重连已停止以避免刷屏；修复配置后点上方「重新连接」即可。
+            </p>
+          </template>
         </div>
       </div>
     </section>
@@ -270,7 +290,7 @@ import FormSelect from '@/components/form/FormSelect.vue'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import LineChart from '@/components/admin/LineChart.vue'
 import EmptyState from '@/components/EmptyState.vue'
-import { createSocketClient } from '@/utils/socket'
+import { createSocketClient, probeSocket } from '@/utils/socket'
 import { fromNow } from '@/utils/time'
 import { toast } from '@/utils/toast'
 import { getStatsAlert, saveStatsAlert } from '@/api/stats'
@@ -285,7 +305,9 @@ import { getStatsAlert, saveStatsAlert } from '@/api/stats'
  */
 const MAX_POINTS = 60
 
-const connection = ref('closed') // connecting / open / closed
+const connection = ref('closed') // connecting / open / closed / failed / kicked / disabled
+// 非空表示「服务端一键关闭了实时连接」（不是网络故障），文案来自后端 503 响应
+const socketDisabled = ref('')
 const status = ref(null)
 const lastUpdate = ref(0)
 const paused = ref(false)
@@ -337,7 +359,8 @@ const connText = computed(
       connecting: '连接中…',
       closed: '已断开',
       failed: '自动重连已停止',
-      kicked: '已被管理员断开'
+      kicked: '已被管理员断开',
+      disabled: '实时连接已关闭'
     })[connection.value] || '已断开'
 )
 const connIcon = computed(
@@ -347,7 +370,8 @@ const connIcon = computed(
       connecting: 'bi-arrow-repeat',
       closed: 'bi-plug',
       failed: 'bi-exclamation-triangle',
-      kicked: 'bi-x-octagon'
+      kicked: 'bi-x-octagon',
+      disabled: 'bi-slash-circle'
     })[connection.value] || 'bi-plug'
 )
 
@@ -673,12 +697,22 @@ function kickUser(item) {
 }
 
 function reconnect() {
+  if (socketDisabled.value) return
   client?.reconnect()
 }
 
-onMounted(() => {
+onMounted(async () => {
   // 告警阈值走 HTTP 接口，实时数据走 socket，两者互不影响
   loadAlert()
+
+  // 服务端可能一键关闭了实时连接（app.toml 的 [socket] enabled = false）：
+  // 先探测一次，否则这一页会一直显示「重连中 / 已断开」，看起来像故障
+  const probe = await probeSocket()
+  if (!probe.available) {
+    socketDisabled.value = probe.message || '站点已关闭实时连接'
+    connection.value = 'disabled'
+    return
+  }
 
   client = createSocketClient({
     onMessage,
@@ -755,7 +789,8 @@ onUnmounted(() => {
   color: var(--success, #16a34a);
   border-color: var(--success, #16a34a);
 }
-.connection-badge.is-connecting {
+.connection-badge.is-connecting,
+.connection-badge.is-disabled {
   color: var(--warning, #b8860b);
   border-color: var(--warning, #b8860b);
 }

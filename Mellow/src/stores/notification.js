@@ -24,14 +24,25 @@ export const useNotificationStore = defineStore('notification', () => {
     return Number(raw?.count ?? raw?.total ?? raw?.data?.count) || 0
   }
 
-  async function refresh() {
+  // 并发的 refresh 去重：侧栏、通知页、用户中心可能同时触发，
+  // 不去重就会同一瞬间打两遍 unread-count + list
+  let pending = null
+
+  async function doRefresh() {
     try {
       const res = await unreadCount()
       // 后端返回结构: { code, data: { count } }
-      count.value = pickCount(res)
+      const next = pickCount(res)
+      const changed = next !== count.value
+      count.value = next
+
+      // 未读数没变就不必再拉「最新一条」：那个请求只是给侧栏卡片显示用的，
+      // 滞后一轮没有影响，但每轮都拉会平白多一个 /notification/list 请求
+      if (!changed && latest.value) return
+
       // 只拉取一条：有未读优先取未读最新，否则取全部最新（比原来两次列表请求少一次）
       const params = { page: 1, limit: 1, order: 'create_time desc' }
-      if (count.value > 0) params.is_read = 0
+      if (next > 0) params.is_read = 0
       const list = await listNotifications(params)
       const item = pickFirst(list)
       // 请求成功但无数据时保留旧值，避免误显示“暂无消息”
@@ -39,6 +50,14 @@ export const useNotificationStore = defineStore('notification', () => {
     } catch {
       // 失败时保留旧值
     }
+  }
+
+  function refresh() {
+    if (pending) return pending
+    pending = doRefresh().finally(() => {
+      pending = null
+    })
+    return pending
   }
 
   // 页面不可见时静默跳过，可见时立即补一次刷新

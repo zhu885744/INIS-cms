@@ -100,9 +100,10 @@ func (this *Chat) IPUT(ctx *gin.Context) {
 	method := strings.ToLower(ctx.Param("method"))
 
 	allow := map[string]any{
-		"ack":  this.ack,
-		"read": this.read,
-		"pref": this.pref,
+		"ack":      this.ack,
+		"read":     this.read,
+		"read-all": this.readAll,
+		"pref":     this.pref,
 	}
 	err := this.call(allow, method, ctx)
 	if err != nil {
@@ -549,6 +550,31 @@ func (this *Chat) read(ctx *gin.Context) {
 		"last_msg_id": lastId,
 		"unread":      (&model.ChatMessages{}).UnreadTotal(uid),
 	}, facade.Lang(ctx, "已标记为已读！"), 200)
+}
+
+// readAll - 把所有会话的未读私信一次性标为已读
+//
+// 兜底入口：会话列表里已经没有入口的未读（对方账号异常、会话被清理但消息还在等），
+// 逐个点开永远清不掉，用它可以把角标一次性归零。
+func (this *Chat) readAll(ctx *gin.Context) {
+
+	uid := this.user(ctx).Id
+	if uid <= 0 {
+		this.json(ctx, nil, facade.Lang(ctx, "请先登录！"), 401)
+		return
+	}
+
+	rows, receipts := (&model.ChatMessages{}).MarkAllRead(uid)
+
+	// 给对方推已读回执：否则对方界面上的「已读」不会亮
+	for _, item := range receipts {
+		notifyChatRead(item.TargetUid, uid, item.LastMsgId)
+	}
+
+	this.json(ctx, gin.H{
+		"updated": rows,
+		"unread":  (&model.ChatMessages{}).UnreadTotal(uid),
+	}, facade.Lang(ctx, "已全部标记为已读！"), 200)
 }
 
 // revoke - 撤回自己发的消息（2 分钟内）

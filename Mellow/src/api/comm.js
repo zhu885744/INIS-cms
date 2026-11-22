@@ -1,5 +1,10 @@
 import { call, devService } from './request'
 
+// 实时连接（WebSocket）当前是否可用：前端建连前先问一次。
+// 直接去探测 /socket 会拿到 400（非 WebSocket 请求），控制台里就是一条红色请求。
+export const getSocketStatus = () =>
+  call('comm', 'socket', { method: 'GET', config: { silent: true, dedupe: false } })
+
 /**
  * 获取服务器 unix 时间戳（用于加密盐派生）
  * 接口路径为 /dev/info/time（不带 /api 前缀，属于 dev 类接口）

@@ -258,9 +258,9 @@
               <i class="bi bi-brush" aria-hidden="true" />
               <span>
                 Powered by
-                <a href="https://github.com/zhu885744/inisv1" target="_blank" rel="noopener noreferrer">inisv1</a>
+                <a href="https://github.com/zhu885744/INIS-cms" target="_blank" rel="noopener noreferrer">INIS-cms</a>
                 ·
-                <a href="https://github.com/zhu885744/Mellow" target="_blank" rel="noopener noreferrer">Mellow</a>
+                <a href="https://github.com/zhu885744/INIS-cms/tree/main/Mellow" target="_blank" rel="noopener noreferrer">Mellow</a>
               </span>
             </span>
           </div>

@@ -191,6 +191,18 @@ func (this *ModelStruct) Debug(yes ...any) *ModelStruct {
 // Where - 条件
 func (this *ModelStruct) Where(args ...any) *ModelStruct {
 
+	// 原生 SQL 片段（含 ?）：直接交给 gorm，支持 "a = ? AND b IN ?" 这类复杂条件。
+	//
+	// 没有这个分支时，片段会被当成字段名 → sanitizeColumn 返回空 → 条件被静默丢弃，
+	// 查询退化成全表（表现为「未读数清不掉」「Like 条件不生效」这类很难查的问题）。
+	// 三段式/两段式的字段写法不受影响（首参不含 ?）。
+	if len(args) >= 2 {
+		if raw, ok := args[0].(string); ok && strings.Contains(raw, "?") {
+			this.model.Where(raw, args[1:]...)
+			return this
+		}
+	}
+
 	if len(args) >= 3 {
 
 		field := sanitizeColumn(args[0])
@@ -887,7 +899,9 @@ func (this *ModelStruct) WithTrashed(yes ...any) *ModelStruct {
 	}
 
 	if cast.ToBool(yes[0]) {
-		this.model.Unscoped()
+		// Unscoped() 返回的是新 session（clone），必须赋回去；
+		// 之前直接丢弃返回值，等于「包含软删除」从未生效
+		this.model = this.model.Unscoped()
 	}
 
 	return this
@@ -1337,7 +1351,8 @@ func (this *ModelStruct) Save(data ...any) (tx *gorm.DB, err error) {
 
 // Force - 真实删除
 func (this *ModelStruct) Force() *ModelStruct {
-	this.model.Unscoped()
+	// 同 WithTrashed：Unscoped() 返回新 session，必须赋回
+	this.model = this.model.Unscoped()
 	return this
 }
 

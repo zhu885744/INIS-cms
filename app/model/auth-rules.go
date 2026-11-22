@@ -86,11 +86,36 @@ func EnsureAuthRules() {
 		return
 	}
 
-	list := createAuthRules()
-	facade.Log.Info(map[string]any{"count": len(list)}, "createAuthRules生成规则数量")
+	// 自愈：表被手工删除 / 迁移中断时，启动即重建。
+	// 启动流程不会调用 InitAuthRules（那是安装期的一次性初始化），之前删表后重启
+	// 只会一路报「表不存在 / 缺 WHERE 条件」，规则永远补不回来。
+	// AutoMigrate 幂等：表存在时只补缺失的字段与索引。
+	drive := facade.DB.Drive()
+	if drive == nil {
+		return
+	}
+	if err := drive.AutoMigrate(&AuthRules{}); err != nil {
+		if facade.Log != nil {
+			facade.Log.Error(map[string]any{"error": err.Error()}, "权限规则表迁移失败，跳过本次补录")
+		}
+		return
+	}
 
-	// 一次性取出现有 hash（含回收站，避免把已删除的规则又补回来）
-	rows, _ := facade.DB.Model(&AuthRules{}).WithTrashed().Column("hash")
+	list := createAuthRules()
+	if facade.Log != nil {
+		facade.Log.Info(map[string]any{"count": len(list)}, "createAuthRules生成规则数量")
+	}
+
+	// 一次性取出现有 hash（含回收站，避免把已删除的规则又补回来）。
+	// 查询失败必须早退：否则 exist 全为空，700+ 条规则会被重新 Create 一遍，
+	// 撞唯一索引刷满 Duplicate 告警，还会放大数据库压力。
+	rows, err := facade.DB.Model(&AuthRules{}).WithTrashed().Column("hash")
+	if err != nil {
+		if facade.Log != nil {
+			facade.Log.Warn(map[string]any{"error": err.Error()}, "读取已有权限规则失败，跳过本次补录")
+		}
+		return
+	}
 	exist := make(map[string]bool)
 	for _, hash := range cast.ToStringSlice(rows) {
 		exist[hash] = true
@@ -103,8 +128,9 @@ func EnsureAuthRules() {
 		if exist[hash] {
 			continue
 		}
-		saveAuthRules(item)
-		created++
+		if saveAuthRules(item) {
+			created++
+		}
 	}
 
 	if created > 0 {
@@ -225,6 +251,9 @@ func SyncPublicRoomRules() {
 
 	updated := 0
 	for _, item := range routes {
+		// Unscoped：回收站里的规则也一起纠正，与 NormalizeAuthRuleTypes 的 WithTrashed 同一口径。
+		// 不动 delete_time，只改 type —— 管理员从回收站恢复后类型已是 common，
+		// 不会出现「恢复了但游客一进 /chat 又被 401」的情况。
 		tx := db.Model(&AuthRules{}).Unscoped().
 			Where("route = ? AND method = ? AND type <> ?", item[1], item[0], "common").
 			Update("type", "common")
@@ -265,14 +294,28 @@ func NormalizeAuthRuleTypes() {
 		}
 	}()
 
+	// 未完成安装 / 数据库未就绪时直接跳过：
+	// 不判空会在启动早期直接 panic，日志里只剩一条「纠正类型时发生panic」，
+	// 反而掩盖真正的启动失败原因。
+	if facade.DB == nil || !facade.Installed() {
+		return
+	}
+
 	table := AuthRules{}
 	// WithTrashed：回收站里的规则也一并纠正，避免恢复后类型又是旧值
+	//
+	// ⚠️ 这里用的是 facade.ModelStruct 的 Where，不是原生 gorm：
+	// 它只认「字段 + 操作符 + 值」三段式（或「字段 + 值」两段式），
+	// 传原生 SQL 片段（如 "type NOT IN ?"）会被当成字段名 → sanitizeColumn 返回空
+	// → 条件被静默丢弃 → Update 缺 WHERE，报 "WHERE conditions required"。
 	tx, err := facade.DB.Model(&table).WithTrashed().
 		Where("type", "NOT IN", []string{"common", "login", "default"}).
 		Update(map[string]any{"type": "default"})
 
 	if err != nil {
-		facade.Log.Warn(map[string]any{"error": err.Error()}, "修正权限规则类型失败")
+		if facade.Log != nil {
+			facade.Log.Warn(map[string]any{"error": err.Error()}, "修正权限规则类型失败")
+		}
 		return
 	}
 
@@ -280,16 +323,22 @@ func NormalizeAuthRuleTypes() {
 		return
 	}
 
-	facade.Log.Info(map[string]any{"rows": tx.RowsAffected}, "已把非标准的权限规则类型修正为 default")
+	if facade.Log != nil {
+		facade.Log.Info(map[string]any{"rows": tx.RowsAffected}, "已把非标准的权限规则类型修正为 default")
+	}
 
-	// 规则缓存名为 rule[METHOD][path] 且无过期时间（见 middleware/rule.go 的 cacheRulePrefix），
-	// 标签是模糊匹配，这里顺带清掉 auth-rules 列表缓存，避免后台仍显示旧的 root 值。
+	// 规则缓存名为 rule[METHOD][path] 且无过期时间（见 middleware/rule.go 的 cacheRulePrefix）。
+	// DelTags 的实现是 `*tag*` 子串匹配（Redis 用 SCAN 模式、BigCache 用 filepath.Match），
+	// 所以 "rule" 同时命中中间件的 rule[...] 与后台列表的 auth-rules[...]，只需清一次。
 	facade.Cache.DelTags([]any{"rule"})
 }
 
 // deprecatedAuthRules - 已下线接口的权限规则清单，启动时按 method + route 从库里清掉
 //
 // 格式：[请求方法, 路由]。将来下线别的接口时，往这里追加一行即可。
+//
+// ⚠️ 方法必须全大写（GET / POST / PUT / DELETE）：hash 由 `[METHOD]ROUTE` 算出，
+// 写成小写会与规则表里的 hash 对不上，删除静默失效。
 var deprecatedAuthRules = [][2]string{
 	{"POST", "/api/comm/verify-email"},     // 注册邮箱验证（注册已用邮箱/短信验证码，功能已移除）
 	{"POST", "/api/comm/send-verify-mail"}, // 重发注册验证邮件
@@ -317,14 +366,17 @@ func PruneAuthRules() {
 		}
 	}()
 
-	// 未完成安装时没有数据库
-	if !facade.Installed() {
+	// 未完成安装 / 数据库未就绪时跳过（原来只判了 Installed，
+	// 安装中 DB 仍可能为 nil，会打出无意义的 panic 日志）
+	if facade.DB == nil || !facade.Installed() {
 		return
 	}
 
 	total := int64(0)
 	for _, item := range deprecatedAuthRules {
 		hash := utils.Hash.Sum32(fmt.Sprintf("[%s]%s", item[0], item[1]))
+		// facade.ModelStruct 的两段式写法（字段 + 值），内部补成 `hash` = ?。
+		// 不能传原生 SQL 片段：那样会被当成字段名、sanitizeColumn 返回空、条件丢失
 		tx, err := facade.DB.Model(&AuthRules{}).Where("hash", hash).Delete()
 		if err != nil {
 			facade.Log.Warn(map[string]any{"error": err.Error(), "route": item[1]}, "清理已下线权限规则失败")
@@ -382,6 +434,11 @@ func readCommonOnly(paths ...string) []string {
 }
 
 // readPerm - 通用只读接口（GET），type=default：需要权限点（后台列表 / 统计）
+//
+// 基础项是「裸 path」（不带 path= / type= 前缀），由 createAuthRules 统一补成
+// type=default，所以 extra 也必须传裸 path（如 "set_top"）。
+// 要追加带类型的规则请用 readCommon(extra...) 或在 batch 里手写
+// "path=xxx&type=yyy"，两种风格不要混用（混用会得到 type=default 的错误结果）。
 func readPerm(extra ...string) []string {
 	items := []string{"one", "all", "sum", "min", "max", "rand", "count", "column"}
 	return append(items, extra...)
@@ -596,6 +653,8 @@ func createAuthRules() (result []AuthRules) {
 			"GET": {
 				// 滑块验证题：发送验证码被判定为频繁时前端弹窗用（公开接口）
 				"path=captcha&name=滑块验证&type=common",
+				// 实时连接状态：前端建连前探测是否被管理员关闭（公开，未登录也要能读）
+				"path=socket&name=实时连接状态&type=common",
 			},
 			"POST": {
 				"path=login&name=传统和加密登录&type=common",
@@ -820,6 +879,9 @@ func createAuthRules() (result []AuthRules) {
 			"PUT": {
 				"path=ack&type=login&name=私信送达确认",
 				"path=read&type=login&name=私信标记已读",
+				// 一键已读：通知页兜底清掉「会话列表里没有入口」的未读，
+				// 与单会话 read 同级别，只要求登录。
+				"path=read-all&type=login&name=私信全部标记已读",
 				// 会话置顶 / 免打扰是「我对这个会话」的本地偏好，只影响自己，
 				// 登录即可，不设权限点。
 				"path=pref&type=login&name=私信会话偏好设置",
@@ -1328,6 +1390,8 @@ func createAuthRules() (result []AuthRules) {
 		"notification":       "【消息通知 API】",
 		"chat":               "【用户私聊 API】",
 		"chat-admin":         "【聊天管理 API】",
+		"room":               "【群聊 API】",
+		"chat-moderation":    "【聊天审核 API】",
 		"report":             "【举报 API】",
 		"cert-type":          "【认证类型 API】",
 		"user-certification": "【用户认证 API】",
@@ -1337,6 +1401,7 @@ func createAuthRules() (result []AuthRules) {
 		"decoration":         "【装扮 API】",
 		"badge":              "【勋章 API】",
 		"badge-category":     "【勋章分类 API】",
+		"renew":              "【续期 API】",
 		"checkin":            "【签到 API】",
 		"docs":               "【文档 API】",
 		"docs-group":         "【文档目录 API】",
@@ -1372,6 +1437,15 @@ func createAuthRules() (result []AuthRules) {
 
 	// 批量生成公共接口
 	for key, value := range batch {
+
+		// 模块前缀缺失时告警（每个模块只报一次）：
+		// 名字缺前缀会让 SyncAuthRuleNames 的「修复历史名称」彻底失效 ——
+		// 它拿这里生成的名字去覆盖旧值，而生成的名字本身就没前缀，永远对不上。
+		prefix, hasPrefix := names[key]
+		if !hasPrefix && facade.Log != nil {
+			facade.Log.Warn(map[string]any{"module": key}, "权限规则模块缺少名称前缀配置（names 未登记该模块）")
+		}
+
 		for method, items := range value {
 			for _, item := range items {
 
@@ -1402,7 +1476,7 @@ func createAuthRules() (result []AuthRules) {
 					Type:   param["type"],
 					Method: strings.ToUpper(method),
 					Route:  "/api/" + key + utils.Ternary[string](utils.Is.Empty(param["path"]), "", "/"+param["path"]),
-					Name:   names[key] + utils.Default(param["name"], methods[method][param["path"]]),
+					Name:   prefix + utils.Default(param["name"], methods[method][param["path"]]),
 					Remark: param["remark"],
 				})
 			}
@@ -1412,14 +1486,20 @@ func createAuthRules() (result []AuthRules) {
 }
 
 // saveAuthRules 保存权限规则
-func saveAuthRules(item AuthRules) {
+//
+// 返回值：是否真的插入了新记录。已存在 / 唯一索引冲突 / 出错都返回 false，
+// 调用方据此统计「本次补录了多少条」，避免失败也计入 created。
+func saveAuthRules(item AuthRules) (created bool) {
 	defer func() {
 		if err := recover(); err != nil {
-			facade.Log.Error(map[string]any{
-				"error": err,
-				"route": item.Route,
-				"name":  item.Name,
-			}, "保存权限规则时发生panic")
+			created = false
+			if facade.Log != nil {
+				facade.Log.Error(map[string]any{
+					"error": err,
+					"route": item.Route,
+					"name":  item.Name,
+				}, "保存权限规则时发生panic")
+			}
 		}
 	}()
 
@@ -1435,23 +1515,31 @@ func saveAuthRules(item AuthRules) {
 		Route:  cast.ToString(item.Route),
 	}
 
+	// facade.ModelStruct 的两段式（字段 + 值）：内部补成 `hash` = ?。
+	// 不要传原生 SQL 片段，否则会被当成字段名、条件被丢弃
 	exist, err := facade.DB.Model(&AuthRules{}).Where("hash", hash).Exist()
 	if err != nil {
-		// 查询异常，仅告警，不return，继续尝试写入
-		facade.Log.Warn(map[string]any{"error": err.Error(), "route": item.Route, "hash": hash}, "检查hash存在性查询异常，直接尝试写入")
+		// 查询异常，仅告警，不 return，继续尝试写入
+		if facade.Log != nil {
+			facade.Log.Warn(map[string]any{"error": err.Error(), "route": item.Route, "hash": hash}, "检查hash存在性查询异常，直接尝试写入")
+		}
 	}
 
 	// 只有查询无错误并且确认存在，才跳过
 	if err == nil && exist {
-		return
+		return false
 	}
 
-	_, err = facade.DB.Model(&AuthRules{}).Create(&table)
-	if err != nil {
-		// 数据库唯一索引冲突直接忽略
+	if _, err = facade.DB.Model(&AuthRules{}).Create(&table); err != nil {
+		// 数据库唯一索引冲突直接忽略（并发创建 / 别的实例刚插过）
 		if strings.Contains(err.Error(), "Duplicate entry") {
-			return
+			return false
 		}
-		facade.Log.Error(map[string]any{"error": err.Error(), "route": item.Route, "hash": hash}, "自动添加规则失败")
+		if facade.Log != nil {
+			facade.Log.Error(map[string]any{"error": err.Error(), "route": item.Route, "hash": hash}, "自动添加规则失败")
+		}
+		return false
 	}
+
+	return true
 }

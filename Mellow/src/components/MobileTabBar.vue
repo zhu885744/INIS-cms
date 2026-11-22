@@ -58,6 +58,7 @@ import { storeToRefs } from 'pinia'
 import { useRoute, useRouter } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 import { useNotificationStore } from '@/stores/notification'
+import { useChatStore } from '@/stores/chat'
 import MomentComposeDialog from './MomentComposeDialog.vue'
 
 /**
@@ -74,6 +75,7 @@ const route = useRoute()
 const router = useRouter()
 const userStore = useUserStore()
 const notif = useNotificationStore()
+const chat = useChatStore()
 const { count: notifCount } = storeToRefs(notif)
 
 // 消息未读角标：未登录不显示；超过 99 显示 99+
@@ -173,19 +175,25 @@ watch(
   }
 )
 
-// 未读角标依赖消息轮询：挂载即保证在跑
+// 站内通知走 WebSocket 推送（见 stores/chat.js）：socket 可用时不轮询，
+// 只有被管理员关闭实时连接时才退回 60 秒兜底。
+// 与 SidebarRight 同一套判断，谁先挂载都要遵守，不能各启各的。
+function syncNotifyPolling() {
+  if (!userStore.isLogged) {
+    notif.stopPolling()
+    return
+  }
+  if (chat.available) notif.stopPolling()
+  else notif.startPolling()
+}
+
 onMounted(() => {
-  if (userStore.isLogged) notif.startPolling()
+  syncNotifyPolling()
 })
 
-// 登录 / 登出时启停轮询
-watch(
-  () => userStore.isLogged,
-  (v) => {
-    if (v) notif.startPolling()
-    else notif.stopPolling()
-  }
-)
+// 登录 / 登出、以及 socket 开 / 关时切换
+watch(() => userStore.isLogged, () => syncNotifyPolling())
+watch(() => chat.available, () => syncNotifyPolling())
 
 // 切换页面时补一次刷新：轮询间隔 60 秒，光靠定时器新消息最久要等一分钟才出角标。
 // 节流 30 秒，避免连续点导航时每次切页都发一轮请求。

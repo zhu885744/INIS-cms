@@ -260,15 +260,20 @@ go build -tags embed -o inis main.go
 
 | 文件 | 说明 |
 |------|------|
-| `app.toml` | 端口（默认 8642）、调试开关、token、socket、通知等 |
-| `cache.toml` | 缓存驱动（local / file / redis）与过期时间 |
-| `crypt.toml` | 登录会话配置 |
-| `log.toml` | 日志级别、保留天数、轮转策略 |
-| `sms.toml` | 短信 / 邮件驱动（阿里云、腾讯云、SMTP）与发件队列 |
-| `storage.toml` | 存储驱动（本地 / 腾讯云 COS）、上传限制与命名规则 |
-| `database.toml` | 数据库连接（安装向导写入） |
+| `app.toml` | 端口（默认 8642）、调试开关、token、后台会话 cookie、主题回退前缀、站点域名、可信代理、RSS、数据统计告警、`[socket] enabled` 一键关闭实时连接等 |
+| `cache.toml` | 缓存驱动（local / file / redis / ram）与过期时间 |
+| `crypt.toml` | 登录会话配置（由 `crypt.go` 自行生成与读写） |
+| `log.toml` | 日志开关、级别、保留天数与轮转策略（按大小 / 天数切割） |
+| `sms.toml` | 短信 / 邮件驱动（阿里云短信、阿里云号码认证、腾讯云短信、SMTP）与发件队列 |
+| `storage.toml` | 存储驱动（本地 / 腾讯云 COS）、附件类型白名单、上传大小与并发限制、路径命名规则 |
+| `sensitive.toml` | 全站敏感词库：规则（词条 / 动作 / 场景 / 等级 / 匹配方式）与白名单，后台「互动配置 → 敏感词库」直接编辑，保存即热更新 |
+| `audit.toml` | 云端内容审核（目前支持百度智能云内容安全），含 API Key / Secret Key 凭据；`enabled = false` 时只用本地词库 |
+| `database.toml` | 数据库连接（由安装向导写入，启动时不预生成） |
 
-> `config/*.toml` 含数据库密码、短信密钥等敏感信息，已在 `.gitignore` 排除，请勿提交。
+> 除 `database.toml` 外，其余 8 个文件在首次启动时按模板生成，**已存在则不覆盖**；
+> 新增配置项以 `app/facade/template.go` 为准。
+>
+> `config/*.toml` 含数据库密码、短信 / 审核密钥等敏感信息，已在 `.gitignore` 排除，请勿提交。
 
 ### 版本号
 
@@ -281,7 +286,8 @@ go build -tags embed -o inis main.go
 
 - 在线接口文档：<https://zhuxu.asia/docs/inisdocs>
 - 仓库内文档更详细：`docs/API docs/`（按模块划分）、`docs/功能清单.md`、`docs/socket.md`、`docs/topics.md`、
-  `docs/cache.md`、`docs/database-index.md`、`docs/二次开发规范.md`、`docs/前端主题开发及API调用规范.md`
+  `docs/cache.md`、`docs/database-index.md`、`docs/二次开发规范.md`、`docs/前端主题开发及API调用规范.md`、
+  [`docs/GoReleaser构建与发布.md`](docs/GoReleaser构建与发布.md)（交叉编译 / 内嵌前端 / Docker 镜像 / 发版流程）
 
 ---
 

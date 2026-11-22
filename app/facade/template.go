@@ -34,7 +34,11 @@ description = "博客简介"
 
 # socket配置
 [socket]
-debug = false                    # 开启调试日志
+# 总开关：false 时不再接受 WebSocket 连接（/socket 直接返回 503），
+# 前端的私信 / 群聊 / 实时统计会自动停用并显示「实时连接已关闭」提示。
+# 适合在低配机器、或反向代理配不好 WebSocket 时一键降级：消息仍可用 HTTP 拉取。
+enabled = true                 # 开关socket
+debug = false                   # 开启调试日志
 ping_timeout = 120              # ping超时时间(秒)
 max_message_size = 1048576      # 最大消息大小(字节)
 max_connections_per_ip = 10     # 每个IP最大连接数

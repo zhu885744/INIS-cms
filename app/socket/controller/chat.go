@@ -32,6 +32,14 @@ func init() {
 	model.PushChatRevoke = PushPrivate
 	// 群聊被 @ 时给被提及者推一条提醒（同样走 dispatch 的 chat_mention 分支）
 	model.PushChatMention = PushPrivate
+	// 站内通知：uid > 0 单播，uid == 0 为广播通知（推给所有在线连接）
+	model.PushNotification = func(uid int, payload map[string]any) {
+		if uid > 0 {
+			PushPrivate(uid, payload)
+			return
+		}
+		BroadcastAll(payload)
+	}
 }
 
 // PushPrivate - 把一条私聊消息推给指定用户（供 API 控制器调用）
@@ -75,6 +83,28 @@ func BroadcastRoom(payload map[string]any) {
 	case Hub.notice <- data:
 	case <-time.After(500 * time.Millisecond):
 		socketLog("群聊广播超时")
+	}
+}
+
+// BroadcastAll - 把一条事件广播给所有在线连接
+//
+// 目前用于「广播通知」（uid=0 的站内通知）：一条记录推给全体在线用户，
+// 前端收到后刷新未读数与列表；离线用户下次进页面拉取即可，不做离线缓存。
+func BroadcastAll(payload map[string]any) {
+
+	if len(payload) == 0 {
+		return
+	}
+
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+
+	select {
+	case Hub.notice <- data:
+	case <-time.After(500 * time.Millisecond):
+		socketLog("全员广播超时")
 	}
 }
 

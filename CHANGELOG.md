@@ -1,5 +1,30 @@
 最新版下载地址：[INIS-cms/releases](https://github.com/zhu885744/INIS-cms/releases)
 
+## INIS-cms v1.1.0
+### 新增
+- 新增实时连接总开关：`config/app.toml` 的 `[socket] enabled = false` 可一键关闭 WebSocket，关闭后 `/socket` 直接返回 503，前端的私信、群聊、在线人数与后台实时统计自动降级并在页面上提示，消息仍可通过 HTTP 拉取
+- 新增 `GET /api/comm/socket`：前端建连前先探测开关状态，不再拿 WebSocket 端点做 HTTP 探测（控制台里那条多余的 400 请求消失）
+- 新增站内通知实时推送：评论、点赞、关注、广播通知落库后通过 WebSocket 推给在线用户（`notification` 单播、`notification_all` 广播），角标与通知列表秒级更新
+- 新增私信一键已读：`PUT /api/chat/read-all` 配合通知页私聊卡片的「全部已读」按钮，清掉会话列表里已无入口的未读
+
+### 优化
+- 优化私信未读口径：未读总数统计全部会话，一键已读同样覆盖全部会话，消除「会话列表没有红点、角标却挂着几十条」的不一致
+- 优化前端通知轮询：socket 可用时通知完全走推送、不再轮询；仅实时连接被关闭时退回 60 秒兜底，`/notifications` 页请求量大幅下降
+- 优化聊天页搜索框：改用 `FormInput` 的 `bare` 变体，聚焦环跟随胶囊圆角，不再出现方角描边外溢
+- 优化实时连接开关：改为每次连接读一次配置，改 `app.toml` 后热更新即时生效，不必重启
+- 优化查询封装：`Model.Where` 支持含 `?` 的原生 SQL 片段，顺带修复装扮 / 勋章回填里 `LIKE` 条件不生效的问题
+- 优化权限规则的启动维护：补全 room / renew / chat-moderation 三个模块的名称前缀，历史缺前缀的规则名可自动回填；补录数量改为按实际写入统计
+- 优化文档：新增 `docs/GoReleaser构建与发布.md`（交叉编译 / 内嵌前端 / Docker 镜像 / 发版流程），`docs/socket.md` 补充总开关与通知推送说明，页脚仓库链接更新为 INIS-cms
+
+### 修复
+- 修复私聊未读数只增不减：`/api/chat/unread` 的统计条件走查询封装时被静默丢弃，退化成全表统计，一键已读后角标仍显示旧数字
+- 修复布尔配置项关不掉的问题：`[socket] enabled`、`debug`、`enable_origin_check`、`enable_ip_ban` 等写成 `false` 时被当成「空值」回退默认值
+- 修复群聊之间切换不刷新：`/chat/room/:id` 组件被复用时未监听路由参数，房间资料、成员与消息仍停留在上一间
+- 修复权限规则表被手工删除后不会自动重建：启动维护时补一次 AutoMigrate（幂等）
+- 修复权限规则的「包含软删除」查询从未生效：`WithTrashed()` / `Force()` 丢弃了 `Unscoped()` 的返回值
+- 修复权限规则补录在读取失败时的全量重插：查询异常时直接跳过并告警，不再刷满唯一索引冲突
+- 修复权限规则维护函数在数据库未就绪时的 panic 风险，统一补 `facade.DB == nil` 防御
+
 ## INIS-cms v1.0.9
 ### 新增
 - 新增 Docker 镜像支持：发布时自动构建 `ghcr.io/zhu885744/inis`（linux/amd64 + linux/arm64 合并为多架构 manifest），镜像基于 alpine、非 root 运行，`/app/config`、`/app/storage`、`/app/runtime` 三个目录可挂载持久化

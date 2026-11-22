@@ -148,10 +148,56 @@ func (this *Notification) fromUserSync(wg *sync.WaitGroup, result *any) {
 	}
 }
 
-// CreateNotification 创建通知（仅落库，不做 WebSocket 推送）
+// PushNotification - 站内通知的实时推送钩子
 //
-// 前台通过 API 拉取（notification/list、notification/all、notification/unread-count）；
-// 通知的投递/可见性完全由查询接口决定，不需要长连接推送。
+// 与 PushChatRevoke 同一套注入方式：model 不能 import socket（socket 已经 import model），
+// 由 app/socket/controller 在 init 里赋值。
+//   - uid > 0：单播给该用户（type=notification）；
+//   - uid == 0：广播通知，推给所有在线连接（type=notification_all）。
+//
+// 未注入时（离线任务 / 定时任务）只落库，用户进页面拉取仍然能看到，不影响正确性。
+var PushNotification func(uid int, payload map[string]any)
+
+// pushNotificationRealtime - 通知落库后的实时推送
+//
+// 只推「有新通知」这件事和展示所需的最小字段：前端收到后统一走
+// notification/unread-count + notification/list 刷新，不在推送里维护第二套状态。
+func pushNotificationRealtime(notif *Notification) {
+
+	if PushNotification == nil || notif == nil || notif.Id <= 0 {
+		return
+	}
+
+	data := map[string]any{
+		"id":          notif.Id,
+		"uid":         notif.Uid,
+		"type":        notif.Type,
+		"title":       notif.Title,
+		"content":     notif.Content,
+		"bind_type":   notif.BindType,
+		"bind_id":     notif.BindId,
+		"create_time": notif.CreateTime,
+	}
+
+	if notif.Uid > 0 {
+		PushNotification(notif.Uid, map[string]any{
+			"type": "notification",
+			"to":   fmt.Sprintf("user_%d", notif.Uid),
+			"data": data,
+		})
+		return
+	}
+
+	PushNotification(0, map[string]any{
+		"type": "notification_all",
+		"data": data,
+	})
+}
+
+// CreateNotification 创建通知（落库 + 实时推送）
+//
+// 前台仍通过 API 拉取（notification/list、notification/unread-count）作为唯一数据源，
+// WebSocket 推送只负责「告诉在线用户有新的了」，收到后前端自己刷新。
 func (this *Notification) CreateNotification(uid, fromUid int, typ, title, content, bindType string, bindId int) (*Notification, error) {
 	notif := &Notification{
 		Uid:      uid,
@@ -170,6 +216,8 @@ func (this *Notification) CreateNotification(uid, fromUid int, typ, title, conte
 		facade.Log.Error(map[string]any{"error": err}, "创建通知失败")
 		return nil, err
 	}
+
+	pushNotificationRealtime(notif)
 
 	return notif, nil
 }
@@ -228,7 +276,7 @@ func (this *Notification) CreateAggregateNotification(uid, fromUid int, typ, tit
 			facade.Log.Error(map[string]any{"error": err}, "合并聚合通知失败")
 		}
 
-		return &Notification{
+		merged := &Notification{
 			Id:             cast.ToInt(exist["id"]),
 			Uid:            uid,
 			FromUid:        fromUid,
@@ -239,7 +287,14 @@ func (this *Notification) CreateAggregateNotification(uid, fromUid int, typ, tit
 			BindType:       bindType,
 			AggregateKey:   aggregateKey,
 			AggregateCount: count,
-		}, err
+		}
+
+		// 合并也是一次「新的互动」：在线用户应当立刻看到角标变化
+		if err == nil {
+			pushNotificationRealtime(merged)
+		}
+
+		return merged, err
 	}
 
 	notif := &Notification{
@@ -260,6 +315,8 @@ func (this *Notification) CreateAggregateNotification(uid, fromUid int, typ, tit
 		facade.Log.Error(map[string]any{"error": err}, "创建聚合通知失败")
 		return nil, err
 	}
+
+	pushNotificationRealtime(notif)
 
 	return notif, nil
 }
@@ -301,6 +358,8 @@ func (this *Notification) CreateBroadcastNotification(fromUid int, typ, title, c
 		facade.Log.Error(map[string]any{"error": err}, "创建广播通知失败")
 		return nil, err
 	}
+
+	pushNotificationRealtime(notif)
 
 	return notif, nil
 }

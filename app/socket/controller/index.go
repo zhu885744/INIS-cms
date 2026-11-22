@@ -46,6 +46,19 @@ func (this Index) Read(ctx *gin.Context) {
 // Connect - socket 连接
 func (this Index) Connect(ctx *gin.Context) {
 
+	// 总开关（每次连接读一次，config/app.toml 热更新即时生效）：
+	// 关闭时不再升级，直接 503，前端据此停用实时功能并在页面上提示。
+	// 放在路由注册期判断会有「改了配置要重启才生效」的坑，这里更稳。
+	if !facade.SocketEnabled() {
+		ctx.Header("Cache-Control", "no-store, no-cache, must-revalidate")
+		ctx.JSON(http.StatusServiceUnavailable, gin.H{
+			"code": 503,
+			"msg":  "站点已关闭socket实时连接",
+			"data": gin.H{"socket": false},
+		})
+		return
+	}
+
 	id, exists := ctx.Get("client_id")
 	if !exists {
 		id = guid()
@@ -830,9 +843,21 @@ func (hub *hub) dispatch(message []byte, allowOffline bool) {
 		// 客户端广播：发给所有在线客户端（含管理员）
 		hub.recordMessage("broadcast")
 		hub.broadcast(message)
-	case msgType == "single" || msgType == "notification":
+	case msgType == "notification_all":
+		// 广播通知（uid=0 的站内通知）：一条记录推给所有在线连接，
+		// 前端收到后刷新未读与列表；离线用户进页面拉取即可
+		hub.recordMessage("broadcast")
+		hub.broadcast(message)
+	case msgType == "single":
 		hub.recordMessage("single")
 		hub.singlecast(message, allowOffline)
+	case msgType == "notification":
+		// 站内通知只推给当前在线的设备：离线用户进页面会自己拉取，
+		// 不需要进离线队列（否则重连时白补一份，只是多触发一次刷新）
+		hub.recordMessage("single")
+		if targetUid := chatTargetUid(cast.ToString(content["to"])); targetUid > 0 {
+			hub.deliverUser(targetUid, message)
+		}
 	case msgType == "private":
 		hub.recordMessage("single")
 		hub.privatecast(message, allowOffline)

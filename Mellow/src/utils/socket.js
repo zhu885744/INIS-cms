@@ -1,6 +1,7 @@
 import { API_URI, SOCKET_URI } from './runtimeConfig'
 import { getCookie } from './cookie'
 import { TOKEN_NAME } from '@/api/request'
+import { getSocketStatus } from '@/api/comm'
 
 /**
  * WebSocket 客户端（后端端点 /socket，见 app/socket/route/app.go）
@@ -98,6 +99,32 @@ export function socketUrl() {
   url.protocol = secure ? 'wss:' : 'ws:'
 
   return url.toString()
+}
+
+/**
+ * 探测服务端是否开放实时连接
+ *
+ * 服务端在 config/app.toml 的 [socket] enabled = false 时，/socket 会直接返回
+ * 503 + JSON（见 app/socket/route/app.go）；而 WebSocket 握手失败只能拿到一个
+ * 1006，前端无法区分「被管理员关闭」和「网络 / 反向代理故障」——两者给用户的
+ * 提示完全不同，所以先用一次普通 HTTP 请求问清楚。
+ *
+ * 返回 { available, message }：
+ *   - available=false：服务端明确关闭，调用方应停止重连并给出提示；
+ *   - 探测本身失败（断网 / 跨域被拦）：按「可用」处理，交给 WebSocket 自己的退避重连。
+ */
+export async function probeSocket() {
+  try {
+    const res = await getSocketStatus()
+    // 只有后端明确回 enabled=false 才停用；接口异常 / 老版本没有该接口时
+    // 一律按「可用」处理，交给 WebSocket 自己的退避重连，避免误伤
+    if (res?.data?.enabled === false) {
+      return { available: false, message: res.data?.message || '站点已关闭实时连接' }
+    }
+    return { available: true, message: '' }
+  } catch {
+    return { available: true, message: '' }
+  }
 }
 
 /**

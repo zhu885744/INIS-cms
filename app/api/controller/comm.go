@@ -31,6 +31,7 @@ func (this *Comm) IGET(ctx *gin.Context) {
 
 	allow := map[string]any{
 		"captcha": this.captcha, // 滑块验证题（发送验证码被判定为频繁时前端弹窗用）
+		"socket":  this.socket,  // 实时连接是否可用（前端建连前探测）
 	}
 	err := this.call(allow, method, ctx)
 
@@ -38,6 +39,26 @@ func (this *Comm) IGET(ctx *gin.Context) {
 		this.json(ctx, nil, facade.Lang(ctx, "方法调用错误：%v", err.Error()), 405)
 		return
 	}
+}
+
+// socket - 实时连接（WebSocket）当前是否可用
+//
+// 前端建连前先问一次：直接去 /socket 做普通 HTTP 探测会拿到 400
+// （{"error":"非WebSocket连接请求"}），控制台里就是一条吓人的红色请求。
+// 关闭时把提示文案一起带回去，前端不用硬编码。
+func (this *Comm) socket(ctx *gin.Context) {
+
+	enabled := facade.SocketEnabled()
+
+	message := ""
+	if !enabled {
+		message = "站点已关闭实时连接"
+	}
+
+	this.json(ctx, gin.H{
+		"enabled": enabled,
+		"message": message,
+	}, facade.Lang(ctx, "查询成功！"), 200)
 }
 
 // IPOST - POST请求本体

@@ -393,8 +393,20 @@ var (
 	space = []byte{' '}
 )
 
+// getSocketConfig - 读取 [socket] 段的配置项
+//
+// 直接读底层 viper：utils.ViperResponse.Get 内部用 `!Is.Empty(result)` 判断
+// 「有没有读到」，而 Is.Empty 把 bool 的 false 当成空值 —— 配置里写
+// `debug = false` / `enable_origin_check = false` 会回退到默认值，开关永远关不掉。
 func getSocketConfig(key string, defaultValue any) any {
-	return config.AppToml.Get("socket."+key, defaultValue)
+	if config.AppToml == nil || config.AppToml.Viper == nil {
+		return defaultValue
+	}
+	value := config.AppToml.Viper.Get("socket." + key)
+	if value == nil {
+		return defaultValue
+	}
+	return value
 }
 
 func socketLog(format string, args ...any) {

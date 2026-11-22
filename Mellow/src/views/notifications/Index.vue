@@ -42,14 +42,28 @@
 
     <!-- 聊天入口：私聊 / 群聊，带未读角标 -->
     <nav class="notice-hub" aria-label="聊天入口">
-      <RouterLink to="/chat" class="notice-hub-card">
-        <span class="notice-hub-icon is-dm"><i class="bi bi-chat-dots-fill" aria-hidden="true" /></span>
-        <span class="notice-hub-text">
-          <strong>私聊</strong>
-          <small>{{ chatUnread > 0 ? `${chatUnread} 条未读` : '和好友单独聊' }}</small>
-        </span>
-        <em v-if="chatUnread > 0" class="notice-hub-badge">{{ chatUnread > 99 ? '99+' : chatUnread }}</em>
-      </RouterLink>
+      <div class="notice-hub-cell">
+        <RouterLink to="/chat" class="notice-hub-card">
+          <span class="notice-hub-icon is-dm"><i class="bi bi-chat-dots-fill" aria-hidden="true" /></span>
+          <span class="notice-hub-text">
+            <strong>私聊</strong>
+            <small>{{ chatUnread > 0 ? `${chatUnread} 条未读` : '和好友单独聊' }}</small>
+          </span>
+          <em v-if="chatUnread > 0" class="notice-hub-badge">{{ chatUnread > 99 ? '99+' : chatUnread }}</em>
+        </RouterLink>
+        <!-- 私信一键已读：会话列表里已经没有入口的未读，逐个点开永远清不掉 -->
+        <button
+          v-if="chatUnread > 0"
+          type="button"
+          class="notice-hub-clear"
+          title="私信全部标为已读"
+          aria-label="私信全部标为已读"
+          :disabled="chatReadAllLoading"
+          @click="readAllChat"
+        >
+          <i class="bi" :class="chatReadAllLoading ? 'bi-hourglass-split' : 'bi-check2-all'" />
+        </button>
+      </div>
 
       <RouterLink to="/chat/room/1" class="notice-hub-card">
         <span class="notice-hub-icon is-room"><i class="bi bi-people-fill" aria-hidden="true" /></span>
@@ -60,6 +74,16 @@
         <em v-if="roomMentions > 0" class="notice-hub-badge">{{ roomMentions > 99 ? '99+' : roomMentions }}</em>
       </RouterLink>
     </nav>
+
+    <!-- 实时连接被管理员关闭：一行轻提示，完整说明放 title -->
+    <p
+      v-if="!chat.available"
+      class="notice-offline"
+      :title="`${chat.socketMessage || '站点已关闭实时连接'}，私信与群聊的新消息不会自动送达，刷新页面即可查看。`"
+    >
+      <i class="bi bi-broadcast-pin" aria-hidden="true" />
+      <span>实时连接已关闭，新消息需刷新查看</span>
+    </p>
 
     <!-- 筛选：读取状态分段 + 类型下拉 -->
     <div class="notice-filter">
@@ -161,7 +185,7 @@
 
 <script setup>
 import FormSelect from '@/components/form/FormSelect.vue'
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import EmptyState from '@/components/EmptyState.vue'
 import Pagination from '@/components/Pagination.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
@@ -300,8 +324,11 @@ function dayLabel(ts) {
   return `${date.getFullYear()} 年 ${date.getMonth() + 1} 月 ${date.getDate()} 日`
 }
 
-async function load() {
-  loading.value = true
+async function load(options = {}) {
+  // silent：socket 推送触发的静默刷新 —— 不显示 loading，失败时也保留旧列表，
+  // 避免列表闪一下或推送抖动时被清空
+  const silent = options?.silent === true
+  if (!silent) loading.value = true
   try {
     const params = { page: page.value }
     if (filter.value.type) params.type = filter.value.type
@@ -311,11 +338,13 @@ async function load() {
     const payload = res.data?.data
     items.value = Array.isArray(payload) ? payload : (payload?.data || [])
     total.value = payload?.count || res.data?.count || 0
-    notif.refresh()
+    // 这里不再顺手 notif.refresh()：轮询时每 30 秒会因此多打
+    // /notification/unread-count + /notification/list 两个请求。
+    // 全局未读由 SidebarRight 的轮询维护，标记已读 / 清空后本页会主动刷新。
   } catch {
-    items.value = []
+    if (!silent) items.value = []
   } finally {
-    loading.value = false
+    if (!silent) loading.value = false
   }
 }
 
@@ -374,6 +403,21 @@ function toneOf(t) {
     tip: 'gift',
     system: 'system'
   })[t] || 'system'
+}
+
+// 私信一键已读：兜底清掉「列表里没有入口」的未读
+const chatReadAllLoading = ref(false)
+
+async function readAllChat() {
+  if (chatReadAllLoading.value || chatUnread.value <= 0) return
+  chatReadAllLoading.value = true
+  try {
+    const ok = await chat.readAll()
+    if (ok) toast.success('私信已全部标记为已读')
+    else toast.error('操作失败，请重试')
+  } finally {
+    chatReadAllLoading.value = false
+  }
 }
 
 async function readAll() {
@@ -437,7 +481,9 @@ async function onClick(n) {
 // 通知不走长连接（只靠查询接口，见 app/model/notification.go），
 // 所以页面停留期间必须自己再拉一次，否则新通知要刷新页面才出现。
 // 只在第一页、且页面可见时轮询：翻页看历史时不该把用户拽回第一页。
-const POLL_INTERVAL = 30000
+// 间隔取 60 秒：30 秒一轮意义不大（站内通知不是即时聊天），却会让
+// Network 面板看起来一直在请求；需要即时性时用户会自己刷新或标记已读。
+const POLL_INTERVAL = 60 * 1000
 let pollTimer = null
 
 function startPolling() {
@@ -457,24 +503,47 @@ function stopPolling() {
 /** 回到前台立刻补一次（后台期间的定时器通常被浏览器限流甚至暂停） */
 function onVisible() {
   if (document.visibilityState !== 'visible') return
+  // 页头「N 条未读」读的是全局未读数：load() 不再顺带刷新它，这里显式补一次
+  notif.refresh()
   if (page.value === 1) load()
-  else notif.refresh()
   // 在其它标签页读完私信后回来，角标也要跟着对齐
   chat.refresh()
 }
+
+// socket 可用时通知走推送（见 stores/chat.js），不需要轮询；
+// 只有被管理员关闭实时连接时才退回 60 秒兜底
+function syncPolling() {
+  if (chat.available) stopPolling()
+  else startPolling()
+}
+
+// socket 推送的「有新通知」：刷新页头计数 + 静默刷新列表
+let unsubscribeNotify = null
 
 onMounted(() => {
   // 私信角标归 chat store 管，进本页先校准一次：
   // 否则展示的是「上次在 /chat」留下的旧数字（读完了这里还挂着几十条未读）
   chat.refresh()
+  // 站内通知的全局未读数同理：进页面先对齐一次
+  notif.refresh()
   load()
-  startPolling()
+  syncPolling()
   document.addEventListener('visibilitychange', onVisible)
+
+  unsubscribeNotify = chat.onEvent((event) => {
+    if (event?.type !== 'notification') return
+    notif.refresh()
+    if (page.value === 1) load({ silent: true })
+  })
 })
+
+// socket 被关闭 / 恢复时切换兜底轮询
+watch(() => chat.available, () => syncPolling())
 
 onBeforeUnmount(() => {
   stopPolling()
   document.removeEventListener('visibilitychange', onVisible)
+  if (unsubscribeNotify) unsubscribeNotify()
 })
 </script>
 
@@ -635,6 +704,41 @@ onBeforeUnmount(() => {
   color: #fff;
   background: var(--danger);
   border-radius: 9px;
+}
+/* 私聊卡片外层：给右上角「一键已读」按钮一个定位基准 */
+.notice-hub-cell {
+  position: relative;
+  display: flex;
+}
+.notice-hub-cell > .notice-hub-card {
+  flex: 1;
+  /* 给右上角按钮让位，避免压住右侧的数字角标 */
+  padding-right: 34px;
+}
+.notice-hub-clear {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+  background: var(--bg-muted);
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease), background-color var(--dur-fast) var(--ease);
+}
+.notice-hub-clear:hover {
+  color: var(--primary);
+  background: var(--accent-soft);
+}
+.notice-hub-clear:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 /* ---------- 筛选 ---------- */
@@ -891,5 +995,31 @@ onBeforeUnmount(() => {
     font-size: 14px;
     border-radius: 9px;
   }
+}
+/* 实时连接被管理员关闭时的提示条（一行轻提示，细节在 title 里） */
+.notice-offline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: -6px 0 0;
+  padding: 6px 10px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  background: var(--bg-muted);
+  /* 与上方私聊 / 群聊卡片的内层控件同一档圆角 */
+  border-radius: var(--radius);
+}
+.notice-offline span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.notice-offline i {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--warning, #b8860b);
 }
 </style>
