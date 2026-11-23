@@ -33,6 +33,17 @@ export const getTomlLog = () => getToml('log')
 /** 通知配置（消息保留天数） */
 export const getTomlNotification = () => getToml('notification')
 
+/** 跨域（CORS）配置：app.toml 的 [system.cors] 段 */
+export const getTomlCors = () => getToml('cors')
+
+/**
+ * 保存跨域配置
+ *
+ * 后端只重写 [system.cors] 段（已有的 key 替换、缺失的补到段末），
+ * app.toml 里其它配置与注释原样保留；保存后中间件即时读到新值。
+ */
+export const saveTomlCors = (data) => saveToml('cors', data)
+
 /**
  * 全站敏感词库（独立 config/sensitive.toml）
  *

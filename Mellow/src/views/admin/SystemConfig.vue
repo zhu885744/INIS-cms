@@ -578,6 +578,9 @@
             </section>
           </template>
 
+          <!-- ============ 跨域 CORS（app.toml 的 [system.cors] 段） ============ -->
+          <CorsSettingsForm v-else-if="tab === 'cors'" />
+
           <!-- ============ 存储 ============ -->
           <template v-else-if="tab === 'storage'">
             <section class="card card-pad">
@@ -1336,6 +1339,8 @@ import { useRoute, useRouter } from 'vue-router'
 import SiteSettingsForm from '@/components/admin/SiteSettingsForm.vue'
 // 自定义菜单 + 个性侧边栏的可视化布局编辑（原在网站设置里，2026-11 抽成独立分页）
 import SiteLayoutForm from '@/components/admin/SiteLayoutForm.vue'
+// 跨域配置（app.toml 的 [system.cors] 段，保存即热更新）
+import CorsSettingsForm from '@/components/admin/CorsSettingsForm.vue'
 import { getConfig, getAllConfigs, saveSystemConfig, saveConfig } from '@/api/config'
 import { useSiteStore } from '@/stores/site'
 import AttachmentLibrary from '@/components/AttachmentLibrary.vue'
@@ -1506,7 +1511,9 @@ const modules = [
     icon: 'bi bi-hdd-stack',
     tabs: [
       { key: 'cache', label: '缓存', icon: 'bi bi-database' },
-      { key: 'storage', label: '存储', icon: 'bi bi-hdd' }
+      { key: 'storage', label: '存储', icon: 'bi bi-hdd' },
+      // 跨域配置也在 app.toml，和缓存 / 存储同属「运行环境」类
+      { key: 'cors', label: '跨域 CORS', icon: 'bi bi-shield-shaded' }
     ]
   },
   {

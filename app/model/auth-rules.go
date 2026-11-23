@@ -713,6 +713,7 @@ func createAuthRules() (result []AuthRules) {
 				"path=sensitive&name=获取全站敏感词库",
 				"path=sensitive-stats&name=获取敏感词命中统计",
 				"path=audit&name=获取云端审核配置",
+				"path=cors&name=获取跨域配置",
 			},
 			"PUT": {
 				"path=sms&name=修改SMS服务配置",
@@ -734,6 +735,7 @@ func createAuthRules() (result []AuthRules) {
 				"path=notification&name=修改通知配置",
 				"path=sensitive&name=修改全站敏感词库",
 				"path=audit&name=修改云端审核配置",
+				"path=cors&name=修改跨域配置",
 			},
 			"POST": {
 				"path=test-sms-email&name=发送测试邮件",

@@ -7,7 +7,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/spf13/cast"
-	"github.com/unti-io/go-utils/utils"
 
 	"inis/app/facade"
 )
@@ -23,18 +22,35 @@ const (
 	defaultCorsAllowedOriginsDefault = "http://localhost:3000,http://127.0.0.1:3000"
 )
 
+// corsValue - 读取跨域配置项（环境变量优先，其次 app.toml，最后默认值）
+//
+// 不能写成 facade.AppToml.Get("system.cors.enabled", true).(bool)：
+// utils.ViperResponse.Get 内部用 `!Is.Empty(result)` 判断「有没有读到」，而 Is.Empty
+// 把 bool 的 false 当成空值 —— 配置写 enabled = false 时会回退成默认 true，
+// 开关永远关不掉（[socket] enabled 也是同一个坑）。
+// 这里直接读底层 viper，用 nil 判断「配置项是否存在」。
+func corsValue(key string, def any) any {
+	if facade.AppToml == nil || facade.AppToml.Viper == nil {
+		return def
+	}
+	if value := facade.AppToml.Viper.Get("system.cors." + key); value != nil {
+		return value
+	}
+	return def
+}
+
 // Cors - 跨域中间件
 func Cors() gin.HandlerFunc {
 	return func(ctx *gin.Context) {
 		header := ctx.Writer.Header()
 
-		enabled := utils.Env().Get("system.cors.enabled", facade.AppToml.Get("system.cors.enabled", true)).(bool)
+		enabled := cast.ToBool(corsValue("enabled", true))
 		if !enabled {
 			ctx.Next()
 			return
 		}
 
-		allowedOriginsStr := utils.Env().Get("system.cors.allowed_origins", facade.AppToml.Get("system.cors.allowed_origins", defaultCorsAllowedOriginsDefault)).(string)
+		allowedOriginsStr := cast.ToString(corsValue("allowed_origins", defaultCorsAllowedOriginsDefault))
 		allowedOrigins := make(map[string]bool)
 		for _, origin := range strings.Split(allowedOriginsStr, ",") {
 			origin = strings.TrimSpace(origin)
@@ -43,12 +59,12 @@ func Cors() gin.HandlerFunc {
 			}
 		}
 
-		maxAge := cast.ToInt(utils.Env().Get("system.cors.max_age", facade.AppToml.Get("system.cors.max_age", defaultCorsMaxAge)))
-		allowCredentials := cast.ToBool(utils.Env().Get("system.cors.allow_credentials", facade.AppToml.Get("system.cors.allow_credentials", defaultCorsAllowCredentials)))
-		allowedMethods := cast.ToString(utils.Env().Get("system.cors.allowed_methods", facade.AppToml.Get("system.cors.allowed_methods", defaultCorsAllowedMethods)))
-		allowedHeaders := cast.ToString(utils.Env().Get("system.cors.allowed_headers", facade.AppToml.Get("system.cors.allowed_headers", defaultCorsAllowedHeaders)))
-		exposedHeaders := cast.ToString(utils.Env().Get("system.cors.exposed_headers", facade.AppToml.Get("system.cors.exposed_headers", defaultCorsExposedHeaders)))
-		defaultOrigin := cast.ToString(utils.Env().Get("system.cors.default_origin", facade.AppToml.Get("system.cors.default_origin", defaultCorsDefaultOrigin)))
+		maxAge := cast.ToInt(corsValue("max_age", defaultCorsMaxAge))
+		allowCredentials := cast.ToBool(corsValue("allow_credentials", defaultCorsAllowCredentials))
+		allowedMethods := cast.ToString(corsValue("allowed_methods", defaultCorsAllowedMethods))
+		allowedHeaders := cast.ToString(corsValue("allowed_headers", defaultCorsAllowedHeaders))
+		exposedHeaders := cast.ToString(corsValue("exposed_headers", defaultCorsExposedHeaders))
+		defaultOrigin := cast.ToString(corsValue("default_origin", defaultCorsDefaultOrigin))
 
 		header.Set("Access-Control-Max-Age", strconv.Itoa(maxAge))
 		header.Set("Access-Control-Allow-Credentials", strconv.FormatBool(allowCredentials))

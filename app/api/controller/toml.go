@@ -268,6 +268,7 @@ func (this *Toml) IGET(ctx *gin.Context) {
 		"sensitive":       this.getSensitive,
 		"sensitive-stats": this.sensitiveStats,
 		"audit":           this.getAudit,
+		"cors":            this.getCors,
 	}
 	err := this.call(allow, method, ctx)
 
@@ -333,6 +334,7 @@ func (this *Toml) IPUT(ctx *gin.Context) {
 		// 源码原文与可视化表单共用：按载荷（content / rules）自动分派
 		"sensitive": this.putSensitive,
 		"audit":     this.putAudit,
+		"cors":      this.putCors,
 	}
 	err := this.call(allow, method, ctx)
 
@@ -1816,6 +1818,214 @@ func (this *Toml) putNotification(ctx *gin.Context) {
 	}
 
 	this.saveTomlConfig(ctx, content, appTomlPath, "修改成功！")
+}
+
+// corsTomlKeys - [system.cors] 段的配置项（也是缺项补写的顺序）
+var corsTomlKeys = []string{
+	"enabled",
+	"allowed_origins",
+	"allowed_methods",
+	"allowed_headers",
+	"exposed_headers",
+	"allow_credentials",
+	"max_age",
+	"default_origin",
+}
+
+// getCors - 读取跨域（CORS）配置
+//
+// 直接读底层 viper：utils.ViperResponse.Get 把 bool 的 false 当成空值会回退默认值，
+// 导致 enabled = false / allow_credentials = false 读出来永远是 true
+// （与 [socket] enabled 是同一类坑）。
+func (this *Toml) getCors(ctx *gin.Context) {
+
+	values := map[string]any{
+		"enabled":           true,
+		"allowed_origins":   "",
+		"allowed_methods":   "GET, POST, PATCH, PUT, DELETE, OPTIONS",
+		"allowed_headers":   "",
+		"exposed_headers":   "",
+		"allow_credentials": true,
+		"max_age":           1800,
+		"default_origin":    "",
+	}
+
+	if facade.AppToml != nil && facade.AppToml.Viper != nil {
+		if section, ok := facade.AppToml.Viper.Get("system.cors").(map[string]any); ok {
+			for key := range values {
+				if raw, exists := section[key]; exists {
+					values[key] = raw
+				}
+			}
+		}
+	}
+
+	this.json(ctx, values, facade.Lang(ctx, "数据请求成功！"), 200)
+}
+
+// putCors - 保存跨域（CORS）配置
+//
+// 只改 config/app.toml 的 [system.cors] 段：段内已有的 key 替换整行（保留行尾注释），
+// 缺失的补到段末；段外内容（其它配置、注释、顺序）原样保留。
+// 中间件每次请求都读配置（见 app/middleware/cors.go），保存后即时生效。
+func (this *Toml) putCors(ctx *gin.Context) {
+
+	params := this.params(ctx)
+
+	values := make(map[string]string, len(corsTomlKeys))
+
+	if raw, ok := params["enabled"]; ok {
+		values["enabled"] = strconv.FormatBool(cast.ToBool(raw))
+	}
+	if raw, ok := params["allow_credentials"]; ok {
+		values["allow_credentials"] = strconv.FormatBool(cast.ToBool(raw))
+	}
+	if raw, ok := params["max_age"]; ok {
+		maxAge := cast.ToInt(raw)
+		if maxAge <= 0 {
+			this.json(ctx, nil, facade.Lang(ctx, "%s 必须大于 0！", "max_age"), 400)
+			return
+		}
+		values["max_age"] = strconv.Itoa(maxAge)
+	}
+	if raw, ok := params["allowed_origins"]; ok {
+		origins := normalizeCorsList(cast.ToString(raw))
+		if strings.Contains(origins, "*") {
+			this.json(ctx, nil, facade.Lang(ctx, "允许的来源不能包含 *（携带凭证时浏览器会拒绝通配符）"), 400)
+			return
+		}
+		values["allowed_origins"] = strconv.Quote(origins)
+	}
+	for _, key := range []string{"allowed_methods", "allowed_headers", "exposed_headers", "default_origin"} {
+		if raw, ok := params[key]; ok {
+			values[key] = strconv.Quote(strings.TrimSpace(cast.ToString(raw)))
+		}
+	}
+
+	if len(values) == 0 {
+		this.json(ctx, nil, facade.Lang(ctx, "没有需要修改的配置！"), 400)
+		return
+	}
+
+	const appTomlPath = "config/app.toml"
+
+	// 读取现有配置（文件不存在时用模板兜底）
+	content := facade.TempApp
+	if utils.File().Exist(appTomlPath) {
+		if bytes := utils.File().Byte(appTomlPath).Byte; len(bytes) > 0 {
+			content = string(bytes)
+		}
+	}
+
+	content = replaceTomlSectionValues(content, "system.cors", values, corsTomlKeys)
+
+	this.saveTomlConfig(ctx, content, appTomlPath, "跨域配置已保存并即时生效！")
+}
+
+// normalizeCorsList - 把多行 / 逗号分隔的来源整理成「a, b, c」
+func normalizeCorsList(raw string) string {
+	parts := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == '\n' || r == '\r'
+	})
+
+	seen := make(map[string]bool, len(parts))
+	list := make([]string, 0, len(parts))
+	for _, item := range parts {
+		item = strings.TrimSpace(item)
+		if item == "" || seen[item] {
+			continue
+		}
+		seen[item] = true
+		list = append(list, item)
+	}
+
+	return strings.Join(list, ", ")
+}
+
+// replaceTomlSectionValues - 更新 TOML 指定段内的若干 key
+//
+// 只动 [section] 段内的行：已有 key 替换整行（保留原行尾注释），缺失的按 order 补到段末；
+// 段不存在时追加到文件末尾。不用模板重写，避免丢掉管理员自己加的注释与其它配置。
+func replaceTomlSectionValues(content string, section string, values map[string]string, order []string) string {
+
+	lines := strings.Split(content, "\n")
+	header := "[" + section + "]"
+
+	start := -1
+	for index, line := range lines {
+		if strings.TrimSpace(line) == header {
+			start = index
+			break
+		}
+	}
+
+	if start < 0 {
+		// 段不存在：追加到文件末尾
+		lines = append(lines, "", header)
+		start = len(lines) - 1
+	}
+
+	// 段范围：从段名下一行到下一个 [xxx] 行之前
+	end := len(lines)
+	for index := start + 1; index < len(lines); index++ {
+		line := strings.TrimSpace(lines[index])
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			end = index
+			break
+		}
+	}
+
+	done := make(map[string]bool, len(values))
+
+	for index := start + 1; index < end; index++ {
+		line := lines[index]
+		trim := strings.TrimSpace(line)
+		if trim == "" || strings.HasPrefix(trim, "#") {
+			continue
+		}
+
+		eq := strings.Index(trim, "=")
+		if eq < 0 {
+			continue
+		}
+
+		key := strings.TrimSpace(trim[:eq])
+		value, ok := values[key]
+		if !ok {
+			continue
+		}
+
+		// 保留原行尾注释（只从等号之后找 #，避免误伤值里的 #）
+		comment := ""
+		eqIndex := strings.Index(line, "=")
+		if hash := strings.Index(line[eqIndex+1:], "#"); hash >= 0 {
+			comment = " " + strings.TrimSpace(line[eqIndex+1+hash:])
+		}
+
+		lines[index] = fmt.Sprintf("%s = %s%s", key, value, comment)
+		done[key] = true
+	}
+
+	missing := make([]string, 0, len(values))
+	for _, key := range order {
+		if done[key] {
+			continue
+		}
+		if value, ok := values[key]; ok {
+			missing = append(missing, fmt.Sprintf("%s = %s", key, value))
+			done[key] = true
+		}
+	}
+
+	if len(missing) > 0 {
+		tail := make([]string, 0, len(missing)+len(lines))
+		tail = append(tail, lines[:end]...)
+		tail = append(tail, missing...)
+		tail = append(tail, lines[end:]...)
+		lines = tail
+	}
+
+	return strings.Join(lines, "\n")
 }
 
 // getAudit - 读取云端内容审核配置
