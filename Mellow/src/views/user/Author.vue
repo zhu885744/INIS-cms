@@ -211,7 +211,10 @@
             <EmptyState :text="emptyText" />
           </div>
           <template v-else>
-            <ArticleCard v-for="a in list" :key="a.id" :article="a" :abstract-limit="50" />
+            <!-- 瀑布流：卡片按列填充，高度自适应（摘要长短不一也不会留大空白） -->
+            <div class="flow">
+              <ArticleCard v-for="a in list" :key="a.id" :article="a" :abstract-limit="50" />
+            </div>
             <div v-if="!finished" class="load-more">
               <button type="button" class="btn btn-ghost btn-sm" :disabled="loading" @click="loadMore">
                 <span v-if="loading" class="spinner spinner-sm" />
@@ -258,7 +261,8 @@
           <div v-if="!list.length" class="empty-row">
             <EmptyState :text="emptyText" />
           </div>
-          <ul v-else class="row-list" :class="{ 'is-managing': fanManageMode && tab === 'fans' }">
+          <!-- 粉丝 / 关注：瀑布流卡片；批量管理时退回单列，勾选更好点 -->
+          <ul v-else class="flow" :class="{ 'is-managing': fanManageMode && tab === 'fans' }">
             <li
               v-for="item in list"
               :key="item.id"
@@ -324,7 +328,8 @@
           <div v-if="!list.length" class="empty-row">
             <EmptyState :text="emptyText" />
           </div>
-          <ul v-else class="row-list">
+          <!-- 点赞 / 收藏：瀑布流卡片，标题最多 3 行 -->
+          <ul v-else class="flow">
             <li v-for="(i, k) in list" :key="i.id || k" class="row-item is-clickable" @click="goDetail(i)">
               <span class="like-badge" :class="badgeClass(i.target_type)">{{ typeLabel(i.target_type) }}</span>
               <span class="like-title" v-html="detailTitleHtml(i)" />
@@ -1899,6 +1904,132 @@ watch(suggestions, () => nextTick(updateSuggestScroll), { immediate: true })
   background: var(--accent-soft);
   color: var(--primary-deep);
   font-weight: 600;
+}
+
+/* ---------- 瀑布流卡片（文章 / 粉丝 / 关注 / 点赞 / 收藏） ----------
+ * 用 CSS 多列实现：卡片高度自适应，不会像等高网格那样留出大片空白。
+ * 列数随宽度递减（3 → 2 → 1），窄屏自动退化为单列。
+ */
+.flow {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  column-count: 3;
+  column-width: 260px;
+  column-gap: 14px;
+}
+/* 卡片不允许被拆到两列里 */
+.flow > * {
+  break-inside: avoid;
+  -webkit-column-break-inside: avoid;
+  margin-bottom: 14px;
+}
+/* 粉丝批量管理模式：退回单列，勾选框与头像同一行 */
+.flow.is-managing {
+  column-count: 1;
+  column-width: auto;
+}
+.flow.is-managing > .row-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.flow.is-managing .row-tail {
+  margin-top: 0;
+}
+
+/* 粉丝 / 关注 / 点赞 / 收藏：原来的横排行改成竖排卡片 */
+.flow > .row-item {
+  display: block;
+  padding: 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  transition: border-color var(--dur-fast) var(--ease), background-color var(--dur-fast) var(--ease);
+}
+.flow > .row-item:hover {
+  background: var(--bg-card);
+  border-color: var(--primary-soft);
+}
+.flow .row-link {
+  align-items: flex-start;
+}
+.flow .row-name {
+  white-space: normal;
+}
+.flow .row-sub {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  white-space: normal;
+  line-height: 1.5;
+}
+.flow .row-tail {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+/* 点赞 / 收藏卡片：类型徽标独占一行，标题最多 3 行，时间在底部 */
+.flow .like-badge {
+  display: inline-block;
+  margin-bottom: 6px;
+}
+.flow .like-title {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  white-space: normal;
+  line-height: 1.55;
+}
+.flow .row-time {
+  display: block;
+  margin-top: 8px;
+}
+
+/* 文章卡片：列表形态（左图右文 + 下虚线）在多列里太挤，改成上图下文的小卡 */
+.flow :deep(.article-item) {
+  padding: 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-soft);
+  border-bottom: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  transition: border-color var(--dur-fast) var(--ease);
+}
+.flow :deep(.article-item:hover) {
+  border-color: var(--primary-soft);
+}
+.flow :deep(.article-layout.has-cover) {
+  flex-direction: column;
+  gap: 10px;
+}
+.flow :deep(.article-cover) {
+  width: 100%;
+  height: 150px;
+}
+.flow :deep(.article-title) {
+  font-size: 15px;
+}
+.flow :deep(.article-abstract) {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+@media (max-width: 1100px) {
+  .flow {
+    column-count: 2;
+  }
+}
+@media (max-width: 680px) {
+  .flow {
+    column-count: 1;
+  }
 }
 
 /* ---------- 通用列表行（粉丝 / 关注 / 点赞 / 收藏 / 可能认识的人） ---------- */

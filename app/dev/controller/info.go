@@ -3,6 +3,7 @@ package controller
 import (
 	"net"
 	"os"
+	"runtime"
 
 	"github.com/gin-gonic/gin"
 	"github.com/shirou/gopsutil/mem"
@@ -77,8 +78,8 @@ func (this *Info) system(ctx *gin.Context) {
 	}
 
 	info := map[string]any{
-		"path":         utils.Get.Pwd(),
-		"pid":          utils.Get.Pid(),
+		"path": utils.Get.Pwd(),
+		"pid":  utils.Get.Pid(),
 		"port": map[string]any{
 			"run":  this.get(ctx, "port"),
 			"real": facade.AppToml.Get("app.port"),
@@ -96,10 +97,16 @@ func (this *Info) system(ctx *gin.Context) {
 }
 
 // version - 版本信息
+//
+// os / arch 是后端二进制实际运行的平台（不是浏览器平台）：
+// 后台「发现新版本」据此挑对应的更新包，用户用 Windows 浏览器访问 Linux 服务器时
+// 也不会下错包（要更新的是服务器上的二进制，不是本地电脑）。
 func (this *Info) version(ctx *gin.Context) {
 	this.json(ctx, map[string]any{
 		"go":   utils.Version.Go(),
 		"inis": facade.Version,
+		"os":   runtime.GOOS,
+		"arch": runtime.GOARCH,
 		"text": "这是一个奇迹！",
 	}, facade.Lang(ctx, defaultResponseMsg), DefaultSuccessCode)
 }

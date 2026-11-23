@@ -350,6 +350,10 @@ func writeImageFile(ctx *gin.Context) func(string, string) {
 func handlePageFile(ctx *gin.Context, prefix string) {
 	if check := utils.File().Exist("public/" + prefix + "/index.html"); check {
 		ctx.Header("Content-Type", "text/html; charset=utf-8")
+		// 入口 HTML 必须回源校验：它里面引用的 chunk 名带 hash，发新版后旧 chunk 会被删掉。
+		// 如果 index.html 被浏览器缓存，用户点进后台就会去请求「已经不存在的旧 chunk」，
+		// 表现为 /static/xxx.js 加载失败（MIME 报错 / 404）。
+		ctx.Header("Cache-Control", "no-cache")
 		// 这里已经开始写响应体，HTTP 状态码无法再更改，出错只记录日志
 		if _, err := ctx.Writer.Write(utils.File().Byte("public" + prefix + "/index.html").Byte); err != nil {
 			facade.Log.Error(map[string]any{"error": err, "path": prefix + "/index.html"}, "写入页面文件失败")
@@ -473,6 +477,11 @@ func themeStyle(ctx *gin.Context) {
 
 // handleImageFile 处理图片文件
 func handleImageFile(ctx *gin.Context, path, ext string, writeImage func(string, string), writeErrorGif func(string), isExist func(string) bool) {
+	// 内嵌主题优先：favicon / og-cover 这类产物内的图片，单文件部署时磁盘上没有
+	if theme.Serve(ctx, path) {
+		return
+	}
+
 	ctx.Header("Content-Type", utils.Mime.Type(ext)+"; charset=utf-8")
 
 	if !isExist("public" + path) {
@@ -638,10 +647,22 @@ func getImageFormat(ext string) imaging.Format {
 // 而且响应里没有 Last-Modified / ETag，浏览器每次刷新都全量重传。
 // ServeFile 自带 Range 支持、Last-Modified 与 304 协商，Content-Type 沿用上面的显式设置。
 func handleStaticFile(ctx *gin.Context, path, ext string, isExist func(string) bool) {
+	// 内嵌主题优先：单文件部署时 public/ 下根本没有前端产物，全靠 go:embed
+	if theme.Serve(ctx, path) {
+		return
+	}
+
 	file := "public" + path
 
 	if !isExist(file) {
-		ctx.JSON(HTTPStatusOK, gin.H{"code": CodeError, "msg": ResourceNotFound, "data": nil})
+		// 静态资源缺失必须回 404，不能回 200 + JSON：
+		//   - 浏览器按 <script type=module> 解析，拿到 application/json 会直接报
+		//     "Expected a JavaScript module script but the server responded with a MIME type of application/json"；
+		//   - 200 还可能被浏览器 / CDN 缓存住，前端就再也拿不到正确文件（只能靠强刷）。
+		// 返回 404 + text/plain，前端和运维一眼能看出「产物不全 / index.html 与 static 不同步」。
+		ctx.Header("Content-Type", "text/plain; charset=utf-8")
+		ctx.Header("Cache-Control", "no-store")
+		ctx.Status(http.StatusNotFound)
 		return
 	}
 

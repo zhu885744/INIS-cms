@@ -62,6 +62,19 @@
         <div class="update-head">
           <span class="update-title">发现新版本 <b>{{ release.tag_name }}</b></span>
           <span class="update-current">当前 INIS {{ version.inis }}</span>
+          <!-- 当前平台的更新包：按「后端二进制所在平台」挑（不是浏览器平台） -->
+          <a
+            v-if="platformAsset"
+            :href="platformAsset.url"
+            class="update-download"
+            target="_blank"
+            rel="noopener noreferrer"
+            :title="`下载 ${releasePlatform} 更新包（${platformAsset.name}）`"
+          >
+            <i class="bi bi-download" aria-hidden="true" /> 下载 {{ releasePlatform }} 包
+            <em v-if="platformAsset.size">{{ formatBytes(platformAsset.size) }}</em>
+          </a>
+          <span v-else-if="releasePlatform" class="update-hint">该版本暂无 {{ releasePlatform }} 包</span>
           <a :href="release.html_url" class="update-link" target="_blank" rel="noopener noreferrer">
             查看详情 <i class="bi bi-box-arrow-up-right" />
           </a>
@@ -216,7 +229,8 @@ function onAvatarError(e) {
 }
 
 // ---------- 版本 / 服务器时间 ----------
-const version = reactive({ inis: '', go: '' })
+// os / arch 是后端二进制实际运行的平台，用来挑对应平台的更新包
+const version = reactive({ inis: '', go: '', os: '', arch: '' })
 const serverTimeText = ref('')
 
 async function loadVersion() {
@@ -226,6 +240,8 @@ async function loadVersion() {
     if (code === 200 && data) {
       version.inis = data.inis || ''
       version.go = data.go || ''
+      version.os = data.os || ''
+      version.arch = data.arch || ''
     }
   } catch {
     /* 版本接口不可用时保持占位 */
@@ -275,7 +291,9 @@ const release = reactive({
   tag_name: '',
   body: '',
   published_at: '',
-  html_url: ''
+  html_url: '',
+  // Release 资产：[{ name, url, size }]，用来挑当前平台对应的更新包
+  assets: []
 })
 
 // Release body 是 Markdown，这里用最普通的 markdown-it 渲染（不接代码高亮，
@@ -302,6 +320,31 @@ mdLite.renderer.rules.image = function (tokens, idx, options, env, self) {
 }
 
 const releaseNotesHtml = computed(() => (release.body ? mdLite.render(release.body) : ''))
+
+// 当前平台（后端二进制所在平台，不是浏览器平台）：linux/amd64
+const releasePlatform = computed(() => {
+  const goos = String(version.os || '').trim().toLowerCase()
+  const goarch = String(version.arch || '').trim().toLowerCase()
+  return goos && goarch ? `${goos}/${goarch}` : ''
+})
+
+// Release 资产名形如 inis_1.1.0_linux_amd64.tar.gz（Windows 是 .zip），
+// 用 `_<os>_<arch>.` 精确匹配，避免 amd64 误配到 arm64 这类子串问题
+const platformAsset = computed(() => {
+  const goos = String(version.os || '').toLowerCase()
+  const goarch = String(version.arch || '').toLowerCase()
+  if (!goos || !goarch) return null
+  const needle = `_${goos}_${goarch}.`
+  return release.assets.find((item) => item.name.toLowerCase().includes(needle)) || null
+})
+
+// 包体积：26.4 MB / 860 KB
+function formatBytes(bytes) {
+  const size = Number(bytes) || 0
+  if (size <= 0) return ''
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(0)} KB`
+  return `${(size / 1024 / 1024).toFixed(1)} MB`
+}
 
 // 去掉 tag 的 v 前缀：v1.0.2 → 1.0.2（本地 version.inis 不带 v）
 function normalizeVersion(value) {
@@ -375,7 +418,15 @@ async function fetchRelease() {
       tag_name: data?.tag_name || '',
       body: data?.body || '',
       published_at: data?.published_at || '',
-      html_url: data?.html_url || ''
+      html_url: data?.html_url || '',
+      // 只保留挑包需要的字段，避免把整个 Release JSON 塞进 localStorage
+      assets: Array.isArray(data?.assets)
+        ? data.assets.map((item) => ({
+            name: item?.name || '',
+            url: item?.browser_download_url || '',
+            size: Number(item?.size) || 0
+          }))
+        : []
     }
   } finally {
     clearTimeout(timer)
@@ -399,7 +450,11 @@ async function checkUpdate(manual = false) {
   release.status = 'loading'
 
   try {
-    const cached = manual ? null : readReleaseCache()
+    // 老缓存没有 assets 字段（本次新增）：当作没有缓存，重新拉一次，
+    // 否则升级后第一次打开仍是旧缓存，平台下载按钮不会出现
+    let cached = manual ? null : readReleaseCache()
+    if (cached && !Array.isArray(cached.assets)) cached = null
+
     const data = cached || (await fetchRelease())
     // 只缓存新鲜拉到的结果，避免把已有缓存的时间戳一直往后推
     if (!cached && data) writeReleaseCache(data)
@@ -408,6 +463,7 @@ async function checkUpdate(manual = false) {
     release.body = data.body
     release.published_at = data.published_at
     release.html_url = data.html_url
+    release.assets = Array.isArray(data.assets) ? data.assets : []
 
     const remote = normalizeVersion(data.tag_name)
     const newer = !!remote && isNewer(remote, version.inis)
@@ -594,7 +650,64 @@ const statGroupDefs = [
 ]
 
 // 待办项：数量 > 0 时高亮，点击直达对应页面
+//
+// 审核类统计与各自后台列表的「待审核」标签保持同一口径：
+//   - 文章 / 动态有草稿概念：status=1 且 audit=0（只写 audit=0 会把草稿也算成待审核；
+//     动态的口径见 utils/moment.js 的 MOMENT_FILTERS.pending，两者必须一致）；
+//   - 评论 / 独立页面 / 友链没有草稿：audit=0 即可。
 const todoDefs = [
+  {
+    key: 'todoAuditArticle',
+    label: '待审核文章',
+    icon: 'bi bi-file-earmark-text',
+    to: '/admin/article',
+    ctrl: 'article',
+    params: { where: JSON.stringify({ audit: 0, status: 1 }) }
+  },
+  {
+    key: 'todoAuditMoment',
+    label: '待审核动态',
+    icon: 'bi bi-chat-square-quote',
+    to: '/admin/content/moments',
+    ctrl: 'moments',
+    params: { where: JSON.stringify({ audit: 0, status: 1 }) }
+  },
+  {
+    key: 'todoAuditComment',
+    label: '待审核评论',
+    icon: 'bi bi-chat-left-text',
+    to: '/admin/comment',
+    ctrl: 'comment',
+    params: { where: JSON.stringify({ audit: 0 }) }
+  },
+  {
+    key: 'todoAuditPage',
+    label: '待审核页面',
+    icon: 'bi bi-window',
+    to: '/admin/pages',
+    ctrl: 'pages',
+    params: { where: JSON.stringify({ audit: 0 }) }
+  },
+  {
+    key: 'todoAuditLink',
+    label: '待审核友链',
+    icon: 'bi bi-link-45deg',
+    to: '/admin/links',
+    ctrl: 'links',
+    params: { where: JSON.stringify({ audit: 0 }) }
+  },
+  {
+    key: 'todoReports',
+    label: '待处理举报',
+    icon: 'bi bi-flag',
+    to: '/admin/reports',
+    ctrl: 'report',
+    method: 'all',
+    // 举报没有通用 count：用 all 取总数。status 传字符串 '0'，
+    // 后端用 utils.Is.Empty 判断，数字 0 会被当成「没传」
+    params: { page: 1, limit: 1, status: '0' },
+    pick: (payload) => payload?.count ?? 0
+  },
   {
     key: 'todoOrders',
     label: '待发货订单',
@@ -606,14 +719,6 @@ const todoDefs = [
     // 必须传字符串 '0'（tinyint 与 '0' 比较由 MySQL 隐式转换）
     params: { page: 1, limit: 1, status: '0' },
     pick: (payload) => payload?.count ?? 0
-  },
-  {
-    key: 'todoAudit',
-    label: '待审核文章',
-    icon: 'bi bi-clock-history',
-    to: '/admin/article',
-    ctrl: 'article',
-    params: { where: JSON.stringify({ audit: 0, status: 1 }) }
   }
 ]
 
@@ -869,38 +974,102 @@ onMounted(async () => {
 .update-link:hover {
   opacity: 0.75;
 }
-/* Release body 经 markdown-it 渲染后插入：v-html 的内容不带 scoped 标记，需用 :deep */
+/* 当前平台的更新包：主色胶囊按钮，与「查看详情」的弱链接区分开 */
+.update-download {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--primary);
+  border-radius: 999px;
+  text-decoration: none;
+  transition: background-color var(--dur-fast) var(--ease);
+}
+.update-download:hover {
+  background: var(--primary-deep);
+}
+.update-download em {
+  font-style: normal;
+  font-weight: 400;
+  opacity: 0.85;
+}
+.update-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+/* Release body 经 markdown-it 渲染后插入：v-html 的内容不带 scoped 标记，需用 :deep。
+ * 注意全局 reset 去掉了 h1~h6 的字号与 ul 的 list-style，
+ * 这里必须逐项显式恢复，否则渲染出来就是「一坨没有层级和项目符号的文字」。
+ */
 .update-notes {
-  margin-top: 8px;
+  margin-top: 10px;
+  max-height: 340px;
+  overflow-y: auto;
+  padding-right: 4px;
   font-size: 13px;
   line-height: 1.7;
   color: var(--text-soft);
   word-break: break-word;
 }
-.update-notes :deep(p) {
-  margin: 0 0 6px;
-}
-.update-notes :deep(p:last-child) {
-  margin-bottom: 0;
-}
+/* 一级标题：加底线，长更新日志一眼能分段 */
 .update-notes :deep(h1),
-.update-notes :deep(h2),
+.update-notes :deep(h2) {
+  margin: 14px 0 6px;
+  padding-bottom: 4px;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+  border-bottom: 1px solid var(--border-soft);
+}
+.update-notes :deep(h1:first-child),
+.update-notes :deep(h2:first-child) {
+  margin-top: 0;
+}
+/* 二级标题（### 新增 / 优化 / 修复）：加粗 + 拉开间距 */
 .update-notes :deep(h3),
 .update-notes :deep(h4),
 .update-notes :deep(h5),
 .update-notes :deep(h6) {
-  margin: 8px 0 4px;
+  margin: 12px 0 4px;
   font-size: 13px;
   font-weight: 600;
   color: var(--text);
 }
+.update-notes :deep(h3:first-child) {
+  margin-top: 0;
+}
+.update-notes :deep(p) {
+  margin: 0 0 8px;
+}
+.update-notes :deep(p:last-child) {
+  margin-bottom: 0;
+}
+/* 列表：显式恢复项目符号，否则中文长列表完全看不出条目边界 */
 .update-notes :deep(ul),
 .update-notes :deep(ol) {
-  margin: 0 0 6px;
-  padding-left: 20px;
+  margin: 4px 0 10px;
+  padding-left: 18px;
+}
+.update-notes :deep(ul) {
+  list-style: disc;
+}
+.update-notes :deep(ol) {
+  list-style: decimal;
 }
 .update-notes :deep(li) {
-  margin: 2px 0;
+  margin: 3px 0;
+  padding-left: 2px;
+}
+.update-notes :deep(li::marker) {
+  font-size: 0.9em;
+  color: var(--text-light);
+}
+.update-notes :deep(strong) {
+  font-weight: 600;
+  color: var(--text);
 }
 .update-notes :deep(a) {
   color: var(--primary);
@@ -909,36 +1078,43 @@ onMounted(async () => {
 .update-notes :deep(a:hover) {
   text-decoration: underline;
 }
+/* 行内代码：用比卡片更深的 --bg-muted，才有「代码」的块感 */
 .update-notes :deep(code) {
   padding: 1px 5px;
-  background: var(--bg-card);
-  border-radius: 4px;
   font-size: 12px;
+  font-family: var(--font-mono);
+  color: var(--text);
+  background: var(--bg-muted);
+  border: 1px solid var(--border-soft);
+  border-radius: 4px;
 }
 .update-notes :deep(pre) {
-  margin: 6px 0;
+  margin: 8px 0;
   padding: 10px 12px;
-  background: var(--bg-card);
-  border-radius: var(--radius-sm);
   overflow-x: auto;
+  background: var(--bg-muted);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
 }
 .update-notes :deep(pre code) {
   padding: 0;
   background: transparent;
+  border: none;
 }
 .update-notes :deep(blockquote) {
-  margin: 6px 0;
-  padding-left: 10px;
+  margin: 8px 0;
+  padding: 2px 0 2px 10px;
   border-left: 3px solid var(--border);
   color: var(--text-muted);
 }
 .update-notes :deep(hr) {
-  margin: 8px 0;
+  margin: 12px 0;
   border: none;
   border-top: 1px solid var(--border);
 }
 .update-notes :deep(img) {
   max-width: 100%;
+  border-radius: var(--radius-sm);
 }
 .update-time {
   margin-top: 8px;
@@ -949,10 +1125,13 @@ onMounted(async () => {
   color: var(--text-light);
 }
 
-/* ---------- 待办 ---------- */
+/* ---------- 待办 ----------
+ * 审核类入口较多（文章 / 动态 / 评论 / 页面 / 友链 / 举报 + 订单），
+ * 列宽收到 180px，桌面一行能放 5-6 个，避免只占半行留下大片空白。
+ */
 .todo-row {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 12px;
 }
 .todo-item {
