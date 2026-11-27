@@ -101,27 +101,23 @@
       </div>
 
       <div v-if="loadingTasks" class="is-loading"><span class="spinner" /> 加载中...</div>
-      <ul v-else-if="taskList.length" class="task-list">
-        <li v-for="t in taskList" :key="t.type" class="task-item" :class="{ 'is-done': t.done }">
-          <span class="task-icon"><i :class="taskIcon(t)" aria-hidden="true" /></span>
-          <div class="task-main">
-            <div class="task-row">
-              <span class="task-name">{{ t.name }}</span>
-              <span class="task-state">
-                <template v-if="t.done">
-                  <i class="bi bi-check-circle-fill" aria-hidden="true" /> 已完成
-                </template>
-                <template v-else-if="Number(t.remain) > 0">还可 +{{ t.remain }}</template>
-                <template v-else>可继续</template>
-              </span>
-            </div>
-            <div class="task-progress">
-              <span class="task-bar"><span class="task-fill" :style="{ width: t.progress + '%' }" /></span>
-              <span class="task-count">{{ t.today_count }}/{{ Number(t.daily_limit) > 0 ? t.daily_limit : '不限' }}</span>
-            </div>
+      <!-- 与 /user/exp 的「经验获取途径」同一套卡片网格 -->
+      <div v-else-if="taskList.length" class="rule-grid">
+        <div v-for="t in taskList" :key="t.type" class="rule" :class="{ 'is-done': t.done }">
+          <span class="rule-icon"><i :class="taskIcon(t)" aria-hidden="true" /></span>
+          <div class="rule-main">
+            <strong class="rule-name">{{ t.name }}</strong>
+            <span class="rule-limit">
+              {{ t.today_count }}/{{ Number(t.daily_limit) > 0 ? t.daily_limit : '不限' }} 次
+              <template v-if="!t.done && Number(t.remain) > 0"> · 还可 +{{ t.remain }}</template>
+            </span>
           </div>
-        </li>
-      </ul>
+          <span v-if="t.done" class="rule-value is-done">
+            <i class="bi bi-check-circle-fill" aria-hidden="true" /> 已完成
+          </span>
+          <span v-else class="rule-value">+{{ t.value }}</span>
+        </div>
+      </div>
       <p v-else class="empty-text">暂无任务</p>
     </section>
 
@@ -832,24 +828,39 @@ watch(isLogged, (val) => {
   color: var(--primary-deep);
   font-variant-numeric: tabular-nums;
 }
-.task-list {
-  display: flex;
-  flex-direction: column;
-  margin: 0;
-  padding: 0;
-  list-style: none;
+/* 区块头右侧的「任务中心」入口 */
+.section-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 8px;
+  color: var(--primary-deep);
+  text-decoration: none;
+  white-space: nowrap;
 }
-.task-item {
-  display: flex;
-  align-items: flex-start;
+.section-link:hover {
+  text-decoration: underline;
+}
+.section-link i {
+  font-size: 10px;
+}
+
+/* 任务卡片网格：尺寸 / 内边距 / 图标圆底与 /user/exp 的「经验获取途径」完全一致 */
+.rule-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 10px;
-  padding: 10px 0;
-  border-bottom: 1px solid var(--border-soft);
 }
-.task-item:last-child {
-  border-bottom: none;
+.rule {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-card);
 }
-.task-icon {
+.rule-icon {
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
@@ -861,68 +872,48 @@ watch(isLogged, (val) => {
   color: var(--text-soft);
   font-size: 14px;
 }
-.task-item.is-done .task-icon {
+.rule-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.rule-name {
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rule-limit {
+  font-size: 11px;
+  color: var(--text-light);
+}
+.rule-value {
+  flex-shrink: 0;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--primary-deep);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 已完成：图标转绿、名称淡化、右侧换成勾选文案（不再显示 +N） */
+.rule.is-done .rule-icon {
   background: rgba(47, 143, 91, 0.12);
   color: var(--success);
 }
-.task-main {
-  flex: 1;
-  min-width: 0;
-}
-.task-row {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 10px;
-}
-.task-name {
-  font-size: 13px;
-  color: var(--text);
-}
-.task-item.is-done .task-name {
+.rule.is-done .rule-name {
+  font-weight: 500;
   color: var(--text-muted);
 }
-.task-state {
-  flex-shrink: 0;
+.rule-value.is-done {
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  font-size: 12px;
-  color: var(--text-light);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-.task-item.is-done .task-state {
+  font-size: 11.5px;
+  font-weight: 500;
   color: var(--success);
-}
-.task-progress {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 8px;
-}
-.task-bar {
-  flex: 1;
-  height: 4px;
-  border-radius: 999px;
-  background: var(--bg-muted);
-  overflow: hidden;
-}
-.task-fill {
-  display: block;
-  height: 100%;
-  border-radius: 999px;
-  background: var(--primary);
-  transition: width 0.3s;
-}
-.task-item.is-done .task-fill {
-  background: var(--success);
-}
-.task-count {
-  flex-shrink: 0;
-  font-size: 11px;
-  color: var(--text-light);
-  font-variant-numeric: tabular-nums;
 }
 
 /* ---------- 明细 ---------- */

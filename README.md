@@ -287,7 +287,8 @@ go build -tags embed -o inis main.go
 - 在线接口文档：<https://zhuxu.asia/docs/inisdocs>
 - 仓库内文档更详细：`docs/API docs/`（按模块划分）、`docs/功能清单.md`、`docs/socket.md`、`docs/topics.md`、
   `docs/cache.md`、`docs/database-index.md`、`docs/二次开发规范.md`、`docs/前端主题开发及API调用规范.md`、
-  [`docs/GoReleaser构建与发布.md`](docs/GoReleaser构建与发布.md)（交叉编译 / 内嵌前端 / Docker 镜像 / 发版流程）
+  [`docs/GoReleaser构建与发布.md`](docs/GoReleaser构建与发布.md)（交叉编译 / 内嵌前端 / Docker 镜像 / 发版流程）、
+  [`docs/侧边栏自定义模块示例.md`](docs/侧边栏自定义模块示例.md)（公告 / 广告位 / 社交 / 快捷入口等 HTML 模块示例）
 
 ---
 
