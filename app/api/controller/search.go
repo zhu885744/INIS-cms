@@ -9,6 +9,18 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/spf13/cast"
+	"gorm.io/gorm"
+)
+
+// 搜索参数边界
+const (
+	// searchKeywordMaxLen - 关键词最大长度（按 rune）
+	// 更长的 LIKE 模式只会退化成全表扫描，对用户也没有实际意义
+	searchKeywordMaxLen = 64
+	// searchLimitDefault - 未传 limit 时的每页条数
+	searchLimitDefault = 10
+	// searchLimitMax - 单类结果每页上限（limit 传 10000 会把整表拉出来）
+	searchLimitMax = 50
 )
 
 // Search - 搜索控制器
@@ -20,26 +32,107 @@ type Search struct {
 	base
 }
 
-// buildSearchQuery 构建搜索查询
-func (this *Search) buildSearchQuery(keyword string, searchFields []string, auditCondition string) (string, map[string]any) {
-	searchTerm := "%" + keyword + "%"
-	var conditions []string
-	var args []any
-
-	for _, field := range searchFields {
-		conditions = append(conditions, field+" LIKE ?")
-		args = append(args, searchTerm)
+// normalizeSearchKeyword - 规范化搜索关键词，并生成 LIKE 用的通配串
+//
+// 返回：
+//   - keyword：清洗后的原始关键词（用于结果高亮与展示）
+//   - term：转义过 LIKE 通配符、并加上首尾 % 的模式串（用于 SQL 参数）
+//
+// 必须转义的原因：用户输入 % 或 _ 会被 MySQL 当成通配符，
+// 搜一个 "%" 就能匹配整张表（慢查询，还能借此探测未公开内容是否存在）。
+func normalizeSearchKeyword(raw string) (keyword string, term string) {
+	// 折叠首尾与内部连续空白：否则 " a  b " 会变成 %a  b%，实际内容里几乎命中不到
+	keyword = strings.Join(strings.Fields(raw), " ")
+	if keyword == "" {
+		return "", ""
 	}
 
-	query := strings.Join(conditions, " OR ")
-	if auditCondition != "" {
-		query = "(" + query + ") AND " + auditCondition
+	if runes := []rune(keyword); len(runes) > searchKeywordMaxLen {
+		keyword = string(runes[:searchKeywordMaxLen])
 	}
 
-	return query, map[string]any{
-		"term": searchTerm,
-		"args": args,
+	// MySQL 默认以 \ 作为 LIKE 转义符：先把 \ 自身转义，再转义 % 与 _
+	escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(keyword)
+
+	return keyword, "%" + escaped + "%"
+}
+
+// clampSearchPage - 夹紧分页参数
+//
+// page 传负数会让 offset 变成负数；limit 传极大值等于把整表拉进内存。
+func clampSearchPage(page, limit int) (int, int) {
+	if page < 1 {
+		page = 1
 	}
+	if limit <= 0 {
+		limit = searchLimitDefault
+	}
+	if limit > searchLimitMax {
+		limit = searchLimitMax
+	}
+	return page, limit
+}
+
+// parseSearchArgs - 统一解析搜索入口的关键词与分页参数
+//
+// ok=false 表示已经写过 400 响应，调用方直接 return 即可。
+func (this *Search) parseSearchArgs(ctx *gin.Context) (keyword string, page, limit int, ok bool) {
+	params := this.params(ctx, map[string]any{
+		"keyword": "",
+		"page":    1,
+		"limit":   searchLimitDefault,
+	})
+
+	keyword, _ = normalizeSearchKeyword(cast.ToString(params["keyword"]))
+	if keyword == "" {
+		this.json(ctx, nil, facade.Lang(ctx, "搜索关键词不能为空！"), 400)
+		return "", 0, 0, false
+	}
+
+	page, limit = clampSearchPage(cast.ToInt(params["page"]), cast.ToInt(params["limit"]))
+	return keyword, page, limit, true
+}
+
+// searchTable - 通用「多列 LIKE + 分页 + 总数」查询
+//
+// term 必须是 normalizeSearchKeyword 产出的已转义模式串；
+// extraWhere 是追加的可见性条件（如 `audit = ?`），其占位符参数按顺序放在 extraArgs。
+// 字段名统一加反引号：pages 的 key 这类保留字不加会直接语法错误。
+func searchTable[T any](
+	db *gorm.DB,
+	term string,
+	fields []string,
+	extraWhere string,
+	extraArgs []any,
+	order string,
+	page, limit int,
+) ([]T, int64) {
+
+	var items []T
+
+	conditions := make([]string, 0, len(fields))
+	args := make([]any, 0, len(fields)+len(extraArgs))
+	for _, field := range fields {
+		conditions = append(conditions, "`"+field+"` LIKE ?")
+		args = append(args, term)
+	}
+
+	where := "(" + strings.Join(conditions, " OR ") + ")"
+	if extraWhere != "" {
+		where += " AND " + extraWhere
+	}
+	args = append(args, extraArgs...)
+
+	base := db.Model(new(T)).Where(where, args...)
+
+	var count int64
+	if err := base.Session(&gorm.Session{}).Count(&count).Error; err != nil || count == 0 {
+		return items, 0
+	}
+
+	_ = base.Order(order).Limit(limit).Offset((page - 1) * limit).Find(&items)
+
+	return items, count
 }
 
 // highlightKeyword 关键词高亮（大小写不敏感）
@@ -80,6 +173,44 @@ func cleanSearchText(text string) string {
 	return strings.TrimSpace(strings.Join(strings.Fields(text), " "))
 }
 
+// searchSnippetWindow - 从原文里截取「关键词附近」的一段窗口
+//
+// 只是为了让后续的纯文本化（5 次全文正则）与高亮工作在有限的文本上：
+// 文章正文动辄几万字，列表 10 条就是 50 次全量正则替换，没有必要。
+// size 为关键词前后各保留的字符数（按 rune，不会切坏中文）。
+func searchSnippetWindow(content, keyword string, size int) string {
+	if content == "" || size <= 0 {
+		return content
+	}
+
+	runes := []rune(content)
+	if len(runes) <= size*2 {
+		return content
+	}
+
+	index := -1
+	if keyword != "" {
+		if byteIndex := strings.Index(strings.ToLower(content), strings.ToLower(keyword)); byteIndex >= 0 {
+			index = len([]rune(content[:byteIndex]))
+		}
+	}
+	if index < 0 {
+		// 正文里没出现关键词（命中标题 / 标签）：取开头一段
+		return string(runes[:size*2])
+	}
+
+	start := index - size
+	if start < 0 {
+		start = 0
+	}
+	end := index + size
+	if end > len(runes) {
+		end = len(runes)
+	}
+
+	return string(runes[start:end])
+}
+
 // snippetKeyword - 从正文里截取「包含关键词」的一段作为内容预览
 //
 // 返回的片段已做纯文本化处理，关键词用 <mark> 包裹（前端直接 v-html 展示即可）：
@@ -87,7 +218,8 @@ func cleanSearchText(text string) string {
 //   - 截断处补省略号；
 //   - 正文里找不到关键词（例如命中标题 / 标签）时，从开头截取。
 func (this *Search) snippetKeyword(content string, keyword string, before, after int) string {
-	text := cleanSearchText(content)
+	// 先按关键词截窗口，避免对整篇正文做全量清理
+	text := cleanSearchText(searchSnippetWindow(content, keyword, 3000))
 	if text == "" {
 		return ""
 	}
@@ -305,6 +437,15 @@ func (this *Search) processSearchResult(items any, count int64, limit int, searc
 		data = this.highlightResult(data, keyword[0])
 	}
 
+	// 无结果时也要返回空数组而不是 null：前端直接 .length / v-for 会因 null 报错
+	if data == nil {
+		data = []map[string]any{}
+	}
+
+	if limit < 1 {
+		limit = searchLimitDefault
+	}
+
 	return map[string]interface{}{
 		"data":  data,
 		"count": count,
@@ -369,200 +510,89 @@ func (this *Search) INDEX(ctx *gin.Context) {
 
 // article - 文章搜索
 func (this *Search) article(ctx *gin.Context) {
-	// 获取请求参数
-	params := this.params(ctx, map[string]any{
-		"keyword": "",
-		"page":    1,
-		"limit":   10,
-		"fields":  "",
-	})
-
-	keyword := cast.ToString(params["keyword"])
-	if keyword == "" {
-		this.json(ctx, nil, facade.Lang(ctx, "搜索关键词不能为空！"), 400)
+	keyword, page, limit, ok := this.parseSearchArgs(ctx)
+	if !ok {
 		return
 	}
 
-	page := cast.ToInt(params["page"])
-	limit := cast.ToInt(params["limit"])
-	fields := cast.ToString(params["fields"])
-
-	// 执行实际的文章搜索
-	result := this.searchArticle(keyword, page, limit, fields)
+	result := this.searchArticle(keyword, page, limit, cast.ToString(ctx.Query("fields")))
 	result["keyword"] = keyword
-
-	// 如果没有搜索到结果，返回空数据而不是测试数据
-	if result["count"] == int64(0) {
-		result["data"] = []map[string]any{}
-	}
 
 	this.json(ctx, result, facade.Lang(ctx, "搜索成功！"), 200)
 }
 
 // pages - 页面搜索
 func (this *Search) pages(ctx *gin.Context) {
-	params := this.params(ctx, map[string]any{
-		"keyword": "",
-		"page":    1,
-		"limit":   10,
-		"fields":  "",
-	})
-
-	keyword := cast.ToString(params["keyword"])
-	if keyword == "" {
-		this.json(ctx, nil, facade.Lang(ctx, "搜索关键词不能为空！"), 400)
+	keyword, page, limit, ok := this.parseSearchArgs(ctx)
+	if !ok {
 		return
 	}
 
-	page := cast.ToInt(params["page"])
-	limit := cast.ToInt(params["limit"])
-	fields := cast.ToString(params["fields"])
-
-	result := this.searchPages(keyword, page, limit, fields)
+	result := this.searchPages(keyword, page, limit, cast.ToString(ctx.Query("fields")))
 	result["keyword"] = keyword
-
-	if result["count"] == int64(0) {
-		result["data"] = []map[string]any{}
-	}
 
 	this.json(ctx, result, facade.Lang(ctx, "搜索成功！"), 200)
 }
 
 // tags - 标签搜索
 func (this *Search) tags(ctx *gin.Context) {
-	params := this.params(ctx, map[string]any{
-		"keyword": "",
-		"page":    1,
-		"limit":   10,
-		"fields":  "",
-	})
-
-	keyword := cast.ToString(params["keyword"])
-	if keyword == "" {
-		this.json(ctx, nil, facade.Lang(ctx, "搜索关键词不能为空！"), 400)
+	keyword, page, limit, ok := this.parseSearchArgs(ctx)
+	if !ok {
 		return
 	}
 
-	page := cast.ToInt(params["page"])
-	limit := cast.ToInt(params["limit"])
-	fields := cast.ToString(params["fields"])
-
-	result := this.searchTags(keyword, page, limit, fields)
+	result := this.searchTags(keyword, page, limit, cast.ToString(ctx.Query("fields")))
 	result["keyword"] = keyword
-
-	if result["count"] == int64(0) {
-		result["data"] = []map[string]any{}
-	}
 
 	this.json(ctx, result, facade.Lang(ctx, "搜索成功！"), 200)
 }
 
 // users - 用户搜索
 func (this *Search) users(ctx *gin.Context) {
-	params := this.params(ctx, map[string]any{
-		"keyword": "",
-		"page":    1,
-		"limit":   10,
-		"fields":  "",
-	})
-
-	keyword := cast.ToString(params["keyword"])
-	if keyword == "" {
-		this.json(ctx, nil, facade.Lang(ctx, "搜索关键词不能为空！"), 400)
+	keyword, page, limit, ok := this.parseSearchArgs(ctx)
+	if !ok {
 		return
 	}
 
-	page := cast.ToInt(params["page"])
-	limit := cast.ToInt(params["limit"])
-	fields := cast.ToString(params["fields"])
-
-	result := this.searchUsers(keyword, page, limit, fields)
+	result := this.searchUsers(keyword, page, limit, cast.ToString(ctx.Query("fields")))
 	result["keyword"] = keyword
-
-	if result["count"] == int64(0) {
-		result["data"] = []map[string]any{}
-	}
 
 	this.json(ctx, result, facade.Lang(ctx, "搜索成功！"), 200)
 }
 
 // links - 友链搜索
 func (this *Search) links(ctx *gin.Context) {
-	params := this.params(ctx, map[string]any{
-		"keyword": "",
-		"page":    1,
-		"limit":   10,
-		"fields":  "",
-	})
-
-	keyword := cast.ToString(params["keyword"])
-	if keyword == "" {
-		this.json(ctx, nil, facade.Lang(ctx, "搜索关键词不能为空！"), 400)
+	keyword, page, limit, ok := this.parseSearchArgs(ctx)
+	if !ok {
 		return
 	}
 
-	page := cast.ToInt(params["page"])
-	limit := cast.ToInt(params["limit"])
-	fields := cast.ToString(params["fields"])
-
-	result := this.searchLinks(keyword, page, limit, fields)
+	result := this.searchLinks(keyword, page, limit, cast.ToString(ctx.Query("fields")))
 	result["keyword"] = keyword
-
-	if result["count"] == int64(0) {
-		result["data"] = []map[string]any{}
-	}
 
 	this.json(ctx, result, facade.Lang(ctx, "搜索成功！"), 200)
 }
 
 // moments - 动态搜索
 func (this *Search) moments(ctx *gin.Context) {
-	params := this.params(ctx, map[string]any{
-		"keyword": "",
-		"page":    1,
-		"limit":   10,
-		"fields":  "",
-	})
-
-	keyword := cast.ToString(params["keyword"])
-	if keyword == "" {
-		this.json(ctx, nil, facade.Lang(ctx, "搜索关键词不能为空！"), 400)
+	keyword, page, limit, ok := this.parseSearchArgs(ctx)
+	if !ok {
 		return
 	}
 
-	page := cast.ToInt(params["page"])
-	limit := cast.ToInt(params["limit"])
-	fields := cast.ToString(params["fields"])
-
-	result := this.searchMoments(keyword, page, limit, fields)
+	result := this.searchMoments(keyword, page, limit, cast.ToString(ctx.Query("fields")))
 	result["keyword"] = keyword
-
-	if result["count"] == int64(0) {
-		result["data"] = []map[string]any{}
-	}
 
 	this.json(ctx, result, facade.Lang(ctx, "搜索成功！"), 200)
 }
 
 // all - 全局搜索
 func (this *Search) all(ctx *gin.Context) {
-	// 获取请求参数
-	params := this.params(ctx, map[string]any{
-		"keyword": "",
-		"page":    1,
-		"limit":   10,
-	})
-
-	keyword := cast.ToString(params["keyword"])
-	if keyword == "" {
-		this.json(ctx, nil, facade.Lang(ctx, "搜索关键词不能为空！"), 400)
+	keyword, page, limit, ok := this.parseSearchArgs(ctx)
+	if !ok {
 		return
 	}
 
-	page := cast.ToInt(params["page"])
-	limit := cast.ToInt(params["limit"])
-
-	// 执行实际的全局搜索
 	result := this.searchAll(keyword, page, limit)
 	result["keyword"] = keyword
 
@@ -570,184 +600,94 @@ func (this *Search) all(ctx *gin.Context) {
 }
 
 // searchArticle - 搜索文章
+//
+// 只搜「已发布 + 已通过审核」：草稿（status=0）不该出现在前台搜索结果里。
 func (this *Search) searchArticle(keyword string, page, limit int, fields ...string) map[string]interface{} {
-	searchTerm := "%" + keyword + "%"
-
-	// 使用数据库级别的 LIKE 查询，提高性能
-	db := facade.DB.Drive()
-
-	// 构建搜索字段（只允许白名单内的列，防止 fields 参数被用于注入或探测敏感列）
+	word, term := normalizeSearchKeyword(keyword)
 	searchFields := this.pickSearchFields("article", fields, []string{"title", "content", "abstract", "tags"})
 
-	// 构建搜索查询
-	var conditions []string
-	var args []any
-	for _, field := range searchFields {
-		conditions = append(conditions, field+" LIKE ?")
-		args = append(args, searchTerm)
-	}
-	args = append(args, 1) // audit = 1
+	items, count := searchTable[model.Article](
+		facade.DB.Drive(), term, searchFields,
+		"audit = ? AND status = ?", []any{1, 1},
+		"create_time desc", page, limit,
+	)
 
-	var articles []model.Article
-	query := db.Model(&articles).Where("("+strings.Join(conditions, " OR ")+") AND audit = ?", args...)
-
-	// 统计总数
-	var count int64
-	query.Count(&count)
-
-	// 分页查询
-	offset := (page - 1) * limit
-	query.Limit(limit).Offset(offset).Order("create_time desc").Find(&articles)
-
-	return this.processSearchResult(articles, count, limit, "article", keyword)
+	return this.processSearchResult(items, count, limit, "article", word)
 }
 
-// searchPages - 搜索独立页面
+// searchPages - 搜索独立页面（独立页面没有草稿概念，只看审核状态）
 func (this *Search) searchPages(keyword string, page, limit int, fields ...string) map[string]interface{} {
-	searchTerm := "%" + keyword + "%"
-
-	db := facade.DB.Drive()
-
-	// 检索字段只允许白名单内的列
+	word, term := normalizeSearchKeyword(keyword)
 	searchFields := this.pickSearchFields("pages", fields, []string{"title", "content", "key"})
 
-	var conditions []string
-	var args []any
-	for _, field := range searchFields {
-		if field == "key" {
-			conditions = append(conditions, "`key` LIKE ?")
-		} else {
-			conditions = append(conditions, field+" LIKE ?")
-		}
-		args = append(args, searchTerm)
-	}
-	args = append(args, 1)
+	items, count := searchTable[model.Pages](
+		facade.DB.Drive(), term, searchFields,
+		"audit = ?", []any{1},
+		"create_time desc", page, limit,
+	)
 
-	var pages []model.Pages
-	query := db.Model(&pages).Where("("+strings.Join(conditions, " OR ")+") AND audit = ?", args...)
-
-	var count int64
-	query.Count(&count)
-
-	offset := (page - 1) * limit
-	query.Limit(limit).Offset(offset).Order("create_time desc").Find(&pages)
-
-	return this.processSearchResult(pages, count, limit, "pages", keyword)
+	return this.processSearchResult(items, count, limit, "pages", word)
 }
 
 // searchTags - 搜索标签
 func (this *Search) searchTags(keyword string, page, limit int, fields ...string) map[string]interface{} {
-	searchTerm := "%" + keyword + "%"
-
-	db := facade.DB.Drive()
-
-	// 检索字段只允许白名单内的列
+	word, term := normalizeSearchKeyword(keyword)
 	searchFields := this.pickSearchFields("tags", fields, []string{"name", "description"})
 
-	var conditions []string
-	var args []any
-	for _, field := range searchFields {
-		conditions = append(conditions, field+" LIKE ?")
-		args = append(args, searchTerm)
-	}
+	items, count := searchTable[model.Tags](
+		facade.DB.Drive(), term, searchFields,
+		"", nil,
+		"create_time desc", page, limit,
+	)
 
-	var tags []model.Tags
-	query := db.Model(&tags).Where("("+strings.Join(conditions, " OR ")+")", args...)
-
-	var count int64
-	query.Count(&count)
-
-	offset := (page - 1) * limit
-	query.Limit(limit).Offset(offset).Order("create_time desc").Find(&tags)
-
-	return this.processSearchResult(tags, count, limit, "tags", keyword)
+	return this.processSearchResult(items, count, limit, "tags", word)
 }
 
 // searchUsers - 搜索用户
+//
+// status = 0 只搜正常账号：被封禁 / 冻结的用户不该在公开搜索里出现。
+// email 命中结果在输出侧仍做脱敏（processSearchResult）。
 func (this *Search) searchUsers(keyword string, page, limit int, fields ...string) map[string]interface{} {
-	searchTerm := "%" + keyword + "%"
-
-	db := facade.DB.Drive()
-
-	// 检索字段只允许白名单内的列（email 命中结果在输出侧仍做脱敏）
+	word, term := normalizeSearchKeyword(keyword)
 	searchFields := this.pickSearchFields("users", fields, []string{"nickname", "email", "description", "title"})
 
-	var conditions []string
-	var args []any
-	for _, field := range searchFields {
-		conditions = append(conditions, field+" LIKE ?")
-		args = append(args, searchTerm)
-	}
-	args = append(args, 0)
+	items, count := searchTable[model.Users](
+		facade.DB.Drive(), term, searchFields,
+		"status = ?", []any{0},
+		"create_time desc", page, limit,
+	)
 
-	var users []model.Users
-	query := db.Model(&users).Where("("+strings.Join(conditions, " OR ")+") AND status = ?", args...)
-
-	var count int64
-	query.Count(&count)
-
-	offset := (page - 1) * limit
-	query.Limit(limit).Offset(offset).Order("create_time desc").Find(&users)
-
-	return this.processSearchResult(users, count, limit, "users", keyword)
+	return this.processSearchResult(items, count, limit, "users", word)
 }
 
 // searchLinks - 搜索友链
 func (this *Search) searchLinks(keyword string, page, limit int, fields ...string) map[string]interface{} {
-	searchTerm := "%" + keyword + "%"
-
-	db := facade.DB.Drive()
-
-	// 检索字段只允许白名单内的列
+	word, term := normalizeSearchKeyword(keyword)
 	searchFields := this.pickSearchFields("links", fields, []string{"nickname", "description", "url"})
 
-	var conditions []string
-	var args []any
-	for _, field := range searchFields {
-		conditions = append(conditions, field+" LIKE ?")
-		args = append(args, searchTerm)
-	}
-	args = append(args, 1)
+	items, count := searchTable[model.Links](
+		facade.DB.Drive(), term, searchFields,
+		"audit = ?", []any{1},
+		"create_time desc", page, limit,
+	)
 
-	var links []model.Links
-	query := db.Model(&links).Where("("+strings.Join(conditions, " OR ")+") AND audit = ?", args...)
-
-	var count int64
-	query.Count(&count)
-
-	offset := (page - 1) * limit
-	query.Limit(limit).Offset(offset).Order("create_time desc").Find(&links)
-
-	return this.processSearchResult(links, count, limit, "links", keyword)
+	return this.processSearchResult(items, count, limit, "links", word)
 }
 
 // searchMoments - 搜索动态
+//
+// audit = 1 且 status = 1：草稿（status=0）和待审核内容都不该出现在公开搜索结果里。
 func (this *Search) searchMoments(keyword string, page, limit int, fields ...string) map[string]interface{} {
-	searchTerm := "%" + keyword + "%"
-
-	db := facade.DB.Drive()
-
-	// 检索字段只允许白名单内的列
+	word, term := normalizeSearchKeyword(keyword)
 	searchFields := this.pickSearchFields("moments", fields, []string{"content", "location"})
 
-	var conditions []string
-	var args []any
-	for _, field := range searchFields {
-		conditions = append(conditions, field+" LIKE ?")
-		args = append(args, searchTerm)
-	}
-	args = append(args, 1)
+	items, count := searchTable[model.Moments](
+		facade.DB.Drive(), term, searchFields,
+		"audit = ? AND status = ?", []any{1, 1},
+		"create_time desc", page, limit,
+	)
 
-	var moments []model.Moments
-	query := db.Model(&moments).Where("("+strings.Join(conditions, " OR ")+") AND audit = ?", args...)
-
-	var count int64
-	query.Count(&count)
-
-	offset := (page - 1) * limit
-	query.Limit(limit).Offset(offset).Order("create_time desc").Find(&moments)
-
-	return this.processSearchResult(moments, count, limit, "moments", keyword)
+	return this.processSearchResult(items, count, limit, "moments", word)
 }
 
 // searchAll - 全局搜索

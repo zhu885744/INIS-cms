@@ -17,6 +17,7 @@
           :placeholder="placeholder"
           aria-label="搜索"
           autocomplete="off"
+          maxlength="64"
           @input="onInput"
           @keydown.down.prevent="move(1)"
           @keydown.up.prevent="move(-1)"
@@ -88,6 +89,16 @@
         <p class="result-head-text">
           <template v-if="loading">
             正在搜索 <span class="result-keyword">{{ submitted }}</span>…
+          </template>
+          <template v-else-if="previewMode && results.length">
+            预览 <strong>{{ results.length }}</strong> 条与
+            <span class="result-keyword">{{ submitted }}</span>
+            相关的内容 · 按 <kbd>Enter</kbd> 查看全部
+          </template>
+          <!-- 预览只查了文章：其它类型可能有结果，别让人误以为「什么都没有」 -->
+          <template v-else-if="previewMode">
+            与 <span class="result-keyword">{{ submitted }}</span>
+            相关的文章没找到 · 按 <kbd>Enter</kbd> 搜索全部类型
           </template>
           <template v-else>
             找到 <strong>{{ results.length }}</strong> 条与
@@ -249,6 +260,12 @@ const results = ref([])
 const history = ref([])
 const selected = ref(-1)
 
+// 输入联想的条数上限：联想阶段只查文章这么几条，
+// 正式搜索（Enter / 点搜索 / 选历史）才按 50 条全量取
+const PREVIEW_LIMIT = 5
+// 当前这批结果是不是联想预览（决定结果头文案，以及要不要写搜索历史）
+const previewMode = ref(false)
+
 let debounceTimer = null
 
 const placeholder = computed(
@@ -299,7 +316,8 @@ function removeHistory(index) {
 function onInput() {
   clearTimeout(debounceTimer)
   debounceTimer = setTimeout(() => {
-    if (keyword.value.trim()) runSearch(keyword.value.trim())
+    // 联想预览：只取少量结果、不写历史；按 Enter 或点「搜索」才是正式搜索
+    if (keyword.value.trim()) runSearch(keyword.value.trim(), { preview: true })
     else resetResults()
   }, 300)
 }
@@ -333,6 +351,7 @@ function resetResults() {
   submitted.value = ''
   results.value = []
   selected.value = -1
+  previewMode.value = false
   syncQuery('', scope.value)
 }
 
@@ -361,17 +380,31 @@ function syncQuery(word, nextScope) {
 }
 
 // ---------- 搜索 ----------
-async function runSearch(word) {
+
+/**
+ * 执行搜索
+ *
+ * options.preview=true 表示「输入联想」：每敲一个字（防抖 300ms）都会触发，
+ * 所以只查少量结果（all 范围下只查文章 PREVIEW_LIMIT 条），也不写搜索历史；
+ * 正式搜索（Enter / 点搜索按钮 / 点历史 / 切范围）才拿全量。
+ */
+async function runSearch(word, options = {}) {
+  const preview = options?.preview === true
+  previewMode.value = preview
+
   submitted.value = word
   selected.value = -1
   loading.value = true
   syncQuery(word, scope.value)
 
   try {
-    const list = scope.value === 'all' ? await searchAll(word) : await searchType(scope.value, word)
+    const limit = preview ? PREVIEW_LIMIT : 50
+    const list =
+      scope.value === 'all' ? await searchAll(word, limit) : await searchType(scope.value, word, limit)
     // 补 _index 供键盘选中（分组后仍能定位到扁平数组里的位置）
     results.value = list.map((item, index) => ({ ...item, _index: index }))
-    if (results.value.length) saveHistory(word)
+    // 历史只记正式搜索：联想阶段的半截词（「搜」「搜索」）不该进搜索历史
+    if (!preview && results.value.length) saveHistory(word)
   } catch {
     results.value = []
   } finally {
@@ -380,22 +413,32 @@ async function runSearch(word) {
 }
 
 // 全部范围：并行查询 + 合并去重（话题最多 3 条，避免刷屏）
-async function searchAll(word) {
+//
+// limit 小于等于 PREVIEW_LIMIT 时只查文章：那是「输入联想」阶段的调用，
+// 每敲一个字就并发六类 × 50 条既浪费流量也让输入卡顿
+async function searchAll(word, limit = 50) {
+  if (limit <= PREVIEW_LIMIT) {
+    return searchType('article', word, limit)
+  }
+
   const [articles, pages, tags, links, users, moments] = await Promise.all([
-    searchType('article', word),
-    searchType('page', word),
-    searchType('tag', word),
-    searchType('links', word),
-    searchType('users', word),
-    searchType('moments', word)
+    searchType('article', word, limit),
+    searchType('page', word, limit),
+    searchType('tag', word, limit),
+    searchType('links', word, limit),
+    searchType('users', word, limit),
+    searchType('moments', word, limit)
   ])
 
   const seen = new Set()
   const merged = []
   const push = (items, max) => {
     ;(items || []).slice(0, max || items.length).forEach((item) => {
-      if (seen.has(item.id)) return
-      seen.add(item.id)
+      // 去重键必须带类型：文章 id=1 与用户 id=1 是两条不同结果，
+      // 只用 id 会把后面的整类都吞掉（例如「用户」「友链」全空）
+      const dedupeKey = `${item._type}-${item.id}`
+      if (seen.has(dedupeKey)) return
+      seen.add(dedupeKey)
       merged.push(item)
     })
   }
@@ -415,11 +458,14 @@ function apiOf(scopeKey) {
   return SCOPES.find((item) => item.key === scopeKey)?.api || scopeKey
 }
 
-async function searchType(scopeKey, word) {
+async function searchType(scopeKey, word, limit = 50) {
   try {
+    // limit 默认 50，是后端单类结果的上限（app/api/controller/search.go 的 searchLimitMax）：
+    // 传更大也会被夹到 50，本页不做翻页，提交时一次取满即可；
+    // 输入联想阶段由 runSearch 传 PREVIEW_LIMIT，只取极少几条
     const res = await call('search', apiOf(scopeKey), {
       method: 'GET',
-      params: { keyword: word, page: 1, limit: 50 }
+      params: { keyword: word, page: 1, limit }
     })
     // INIS 列表返回：data 可能直接是数组，也可能包在 data.data 里
     const arr = res.data?.data || res.data
