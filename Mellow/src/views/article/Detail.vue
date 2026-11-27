@@ -16,6 +16,16 @@
       </component>
       <span class="dot">·</span>
       <span>{{ formatDate(article.create_time) }}</span>
+      <!-- 发布端：老数据没有该字段（空串）时不显示 -->
+      <template v-if="article.device">
+        <span class="dot">·</span>
+        <span>{{ article.device === 'mobile' ? '手机端' : '电脑端' }}</span>
+      </template>
+      <!-- 发布后修改过（草稿期间的保存不计） -->
+      <template v-if="Number(article.edit_count) > 0">
+        <span class="dot">·</span>
+        <span>已编辑</span>
+      </template>
       <span class="dot">·</span>
       <span>{{ article.views || 0 }} 次阅读</span>
       <template v-if="commentShow">

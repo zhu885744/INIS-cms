@@ -13,6 +13,13 @@
         </h3>
         <div class="article-meta">
           <span class="meta-date">{{ formatDate(article.publish_time || article.create_time) }}</span>
+          <!-- 发布端：老数据没有该字段（空串）时不显示 -->
+          <span v-if="article.device" class="meta-device">
+            <i :class="article.device === 'mobile' ? 'bi bi-phone' : 'bi bi-laptop'" aria-hidden="true" />
+            {{ article.device === 'mobile' ? '手机端' : '电脑端' }}
+          </span>
+          <!-- 发布后修改过（草稿期间的保存不计） -->
+          <span v-if="Number(article.edit_count) > 0" class="meta-edited">已编辑</span>
           <span v-if="group" class="meta-group">
             <router-link :to="`/category/${group.key || group.id}`">{{ group.name }}</router-link>
           </span>
@@ -189,6 +196,17 @@ function goDetail() {
   margin-bottom: 8px;
 }
 .meta-date { color: var(--primary-deep); }
+/* 发布端 / 已编辑：弱化到「补充信息」的层级，不要抢日期的视觉权重 */
+.meta-device,
+.meta-edited {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--text-light);
+}
+.meta-device i {
+  font-size: 11px;
+}
 .meta-group a,
 .meta-tag a {
   color: var(--text-soft);

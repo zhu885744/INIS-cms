@@ -352,7 +352,7 @@ func (this *Moments) create(ctx *gin.Context) {
 		return
 	}
 
-	table := model.Moments{Uid: uid, CreateTime: time.Now().Unix(), UpdateTime: time.Now().Unix()}
+	table := model.Moments{Uid: uid, CreateTime: time.Now().Unix(), UpdateTime: time.Now().Unix(), Device: detectDevice(ctx.Request.UserAgent())}
 	allowFields := append([]any{}, momentsAllowFieldsSlice...)
 	root := this.meta.root(ctx)
 	if root {
@@ -529,6 +529,12 @@ func (this *Moments) update(ctx *gin.Context) {
 	}
 
 	async.Set("last_update", time.Now().Unix())
+
+	// 编辑次数：只有「已发布」的动态再次保存才算一次编辑（草稿期间的反复保存不算），
+	// 前台据此显示「已编辑」。并发下可能少计，这里不需要精确值。
+	if prevStatus == 1 {
+		async.Set("edit_count", cast.ToInt(prev["edit_count"])+1)
+	}
 
 	item := facade.DB.Model(&table).WithTrashed().Where("id", params["id"])
 

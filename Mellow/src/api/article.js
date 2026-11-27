@@ -44,7 +44,7 @@ export const getAuthorArticles = (uid, params = {}) =>
     method: 'GET',
     params: {
       where: JSON.stringify({ uid, audit: 1, status: 1 }),
-      field: 'id,title,abstract,views,create_time,group,login',
+      field: 'id,title,abstract,views,create_time,group,login,device,edit_count',
       order: 'create_time desc',
       page: 1,
       limit: 10,
@@ -64,7 +64,7 @@ export const getMyArticles = (uid, params = {}) =>
       order: 'create_time desc',
       page: 1,
       limit: 10,
-      field: 'id,uid,title,abstract,views,status,audit,reason,covers,group,tags,scope,scope_integral,create_time,update_time,publish_time',
+      field: 'id,uid,title,abstract,views,status,audit,reason,covers,group,tags,scope,scope_integral,device,edit_count,create_time,update_time,publish_time',
       ...params
     }
   })

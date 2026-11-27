@@ -13,29 +13,33 @@ import (
 )
 
 type Article struct {
-	Id         int    `gorm:"type:int(32); comment:主键;" json:"id"`
-	Uid        int    `gorm:"type:int(32); comment:用户ID; default:0;" json:"uid"`
-	Title      string `gorm:"size:256; comment:标题; default:Null;" json:"title"`
-	Abstract   string `gorm:"size:512; comment:摘要; default:Null;" json:"abstract"`
-	Content    string `gorm:"type:longtext; comment:内容; default:Null;" json:"content"`
-	Covers     string `gorm:"type:text; comment:封面; default:Null;" json:"covers"`
-	Top        int    `gorm:"type:int(12); comment:置顶; default:0;" json:"top"`
-	Views      int    `gorm:"type:int(32); comment:浏览量; default:0;" json:"views"`
-	Tags       string `gorm:"comment:标签; default:Null;" json:"tags"`
-	Group      string `gorm:"comment:分类; default:Null;" json:"group"`
-	Remark     string `gorm:"comment:备注; default:Null;" json:"remark"`
-	Editor     string `gorm:"comment:编辑器; default:'vditor';" json:"editor"`
-	Audit      int    `gorm:"type:int(12); comment:审核; default:0;" json:"audit"`
-	Reason     string `gorm:"size:512; comment:审核未通过原因; default:Null;" json:"reason"`
+	Id       int    `gorm:"type:int(32); comment:主键;" json:"id"`
+	Uid      int    `gorm:"type:int(32); comment:用户ID; default:0;" json:"uid"`
+	Title    string `gorm:"size:256; comment:标题; default:Null;" json:"title"`
+	Abstract string `gorm:"size:512; comment:摘要; default:Null;" json:"abstract"`
+	Content  string `gorm:"type:longtext; comment:内容; default:Null;" json:"content"`
+	Covers   string `gorm:"type:text; comment:封面; default:Null;" json:"covers"`
+	Top      int    `gorm:"type:int(12); comment:置顶; default:0;" json:"top"`
+	Views    int    `gorm:"type:int(32); comment:浏览量; default:0;" json:"views"`
+	Tags     string `gorm:"comment:标签; default:Null;" json:"tags"`
+	Group    string `gorm:"comment:分类; default:Null;" json:"group"`
+	Remark   string `gorm:"comment:备注; default:Null;" json:"remark"`
+	Editor   string `gorm:"comment:编辑器; default:'vditor';" json:"editor"`
+	Audit    int    `gorm:"type:int(12); comment:审核; default:0;" json:"audit"`
+	Reason   string `gorm:"size:512; comment:审核未通过原因; default:Null;" json:"reason"`
 	// ⚠ 不要 default:1 —— GORM 在 Create 时会把零值字段替换成 default 值，
 	// 草稿（status=0）会被写成 1（已发布），草稿箱失效
-	Status     int    `gorm:"type:int(12); comment:状态 0-草稿 1-发布;" json:"status"`
+	Status int `gorm:"type:int(12); comment:状态 0-草稿 1-发布;" json:"status"`
 	// 可见范围：1-公开（含访客）2-登录可见 3-付费可见；
 	// 付费可见时 ScopeIntegral 为兑换所需积分（兑换记录见 content-unlock.go）
 	// ⚠ default:1：不传 scope 时按公开落库，历史数据（0）在读取时也按公开处理
-	Scope         int    `gorm:"type:int(12); comment:可见范围 1-公开 2-登录可见 3-付费可见; default:1;" json:"scope"`
-	ScopeIntegral int    `gorm:"type:int(32); comment:付费可见所需积分; default:0;" json:"scope_integral"`
-	LastUpdate    int64  `gorm:"comment:最后更新时间; default:0;" json:"last_update"`
+	Scope         int   `gorm:"type:int(12); comment:可见范围 1-公开 2-登录可见 3-付费可见; default:1;" json:"scope"`
+	ScopeIntegral int   `gorm:"type:int(32); comment:付费可见所需积分; default:0;" json:"scope_integral"`
+	LastUpdate    int64 `gorm:"comment:最后更新时间; default:0;" json:"last_update"`
+	// 发布端：pc / mobile（按发布时的 User-Agent 判定，编辑不改，老数据为空串表示未知）
+	Device string `gorm:"size:16; comment:发布端 pc/mobile; default:'';" json:"device"`
+	// 编辑次数：发布后被修改过则 >0（草稿期间的保存不计入，只有「已发布 → 再编辑」才 +1）
+	EditCount int `gorm:"type:int(12); comment:编辑次数; default:0;" json:"edit_count"`
 	// 以下为公共字段
 	Json        any                   `gorm:"type:longtext; comment:用于存储JSON数据;" json:"json"`
 	Text        any                   `gorm:"type:longtext; comment:用于存储文本数据;" json:"text"`

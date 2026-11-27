@@ -34,6 +34,16 @@
         </div>
         <div class="feed-time">
           <span>{{ fromNow(article.publish_time || article.create_time) }}</span>
+          <!-- 发布端：老数据没有该字段（空串）时不显示 -->
+          <template v-if="article.device">
+            <span class="feed-dot">·</span>
+            <span>{{ article.device === 'mobile' ? '手机端' : '电脑端' }}</span>
+          </template>
+          <!-- 发布后修改过（草稿期间的保存不计） -->
+          <template v-if="Number(article.edit_count) > 0">
+            <span class="feed-dot">·</span>
+            <span>已编辑</span>
+          </template>
           <!-- 当前可见范围：仅未登录访客显示 -->
           <ScopeBadge
             v-if="showScopeNotice"
@@ -479,6 +489,11 @@ watch(
   margin-top: 2px;
   font-size: 12px;
   color: var(--text-muted);
+}
+/* 分隔点：flex 的 gap 会给它两侧各留 6px，收一下避免「3天前 · 电脑端」被拉太开 */
+.feed-dot {
+  margin: 0 -3px;
+  color: var(--text-light);
 }
 /* 文章分类（分组名）：与「长文」同为胶囊，放在底部同行，过长省略 */
 .kind-group {

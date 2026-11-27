@@ -10,24 +10,28 @@ import (
 )
 
 type Moments struct {
-	Id          int                   `gorm:"type:int(32); comment:主键;" json:"id"`
-	Uid         int                   `gorm:"type:int(32); comment:用户ID; default:0;" json:"uid"`
-	Content     string                `gorm:"type:longtext; comment:内容; default:Null;" json:"content"`
-	Images      string                `gorm:"type:text; comment:图片; default:Null;" json:"images"`
-	Location    string                `gorm:"size:256; comment:位置; default:Null;" json:"location"`
-	Top         int                   `gorm:"type:int(12); comment:置顶; default:0;" json:"top"`
-	Views       int                   `gorm:"type:int(32); comment:浏览量; default:0;" json:"views"`
-	Audit       int                   `gorm:"type:int(12); comment:审核; default:0;" json:"audit"`
-	Reason      string                `gorm:"size:512; comment:审核未通过原因; default:Null;" json:"reason"`
+	Id       int    `gorm:"type:int(32); comment:主键;" json:"id"`
+	Uid      int    `gorm:"type:int(32); comment:用户ID; default:0;" json:"uid"`
+	Content  string `gorm:"type:longtext; comment:内容; default:Null;" json:"content"`
+	Images   string `gorm:"type:text; comment:图片; default:Null;" json:"images"`
+	Location string `gorm:"size:256; comment:位置; default:Null;" json:"location"`
+	Top      int    `gorm:"type:int(12); comment:置顶; default:0;" json:"top"`
+	Views    int    `gorm:"type:int(32); comment:浏览量; default:0;" json:"views"`
+	Audit    int    `gorm:"type:int(12); comment:审核; default:0;" json:"audit"`
+	Reason   string `gorm:"size:512; comment:审核未通过原因; default:Null;" json:"reason"`
 	// ⚠ 不要 default:1 —— GORM 在 Create 时会把零值字段替换成 default 值，
 	// 草稿（status=0）会被写成 1（已发布），前台「我的动态」里草稿直接对外可见
-	Status      int                   `gorm:"type:int(12); comment:状态 0-草稿 1-发布;" json:"status"`
+	Status int `gorm:"type:int(12); comment:状态 0-草稿 1-发布;" json:"status"`
 	// 可见范围：1-公开 2-登录可见 3-付费可见（ScopeIntegral 为兑换所需积分）
-	Scope         int    `gorm:"type:int(12); comment:可见范围 1-公开 2-登录可见 3-付费可见; default:1;" json:"scope"`
-	ScopeIntegral int    `gorm:"type:int(32); comment:付费可见所需积分; default:0;" json:"scope_integral"`
+	Scope         int `gorm:"type:int(12); comment:可见范围 1-公开 2-登录可见 3-付费可见; default:1;" json:"scope"`
+	ScopeIntegral int `gorm:"type:int(32); comment:付费可见所需积分; default:0;" json:"scope_integral"`
 	// 话题：正文里 #话题# 解析出的标签 id，格式 |1|2|3|（与文章 tags 口径一致，便于 LIKE 聚合）
-	Tags        string                `gorm:"size:256; comment:话题; default:Null;" json:"tags"`
-	LastUpdate  int64                 `gorm:"comment:最后更新时间; default:0;" json:"last_update"`
+	Tags       string `gorm:"size:256; comment:话题; default:Null;" json:"tags"`
+	LastUpdate int64  `gorm:"comment:最后更新时间; default:0;" json:"last_update"`
+	// 发布端：pc / mobile（按发布时的 User-Agent 判定，编辑不改，老数据为空串表示未知）
+	Device string `gorm:"size:16; comment:发布端 pc/mobile; default:'';" json:"device"`
+	// 编辑次数：发布后被修改过则 >0（草稿期间的保存不计入，只有「已发布 → 再编辑」才 +1）
+	EditCount   int                   `gorm:"type:int(12); comment:编辑次数; default:0;" json:"edit_count"`
 	Json        any                   `gorm:"type:longtext; comment:用于存储JSON数据;" json:"json"`
 	Text        any                   `gorm:"type:longtext; comment:用于存储文本数据;" json:"text"`
 	Result      any                   `gorm:"type:varchar(256); comment:不存储数据，用于封装返回结果;" json:"result"`

@@ -72,6 +72,21 @@ func (this *Article) processFieldValue(val any) any {
 	return val
 }
 
+// detectDevice - 按 User-Agent 判定发布端（pc / mobile）
+//
+// 只在**发布时**写一次，编辑不改（展示的是「这条内容是在什么设备上发的」）。
+// 判定只看移动端特征标记：手机浏览器、App 内 WebView、小程序都会带。
+// 不用 micromessenger：PC 微信内置浏览器也带这个标记，会把桌面端误判成手机。
+func detectDevice(ua string) string {
+	ua = strings.ToLower(ua)
+	for _, token := range []string{"mobile", "android", "iphone", "ipod", "ipad", "harmonyos"} {
+		if strings.Contains(ua, token) {
+			return "mobile"
+		}
+	}
+	return "pc"
+}
+
 // assertRichTextSafe - 文章标题 / 摘要 / 正文的脚本注入拦截
 //
 // 文章正文是**原样入库、原样渲染**的（富文本编辑器，不走 bluemonday 全量清洗，
@@ -410,7 +425,7 @@ func (this *Article) create(ctx *gin.Context) {
 		return
 	}
 
-	table := model.Article{Uid: uid, CreateTime: time.Now().Unix(), UpdateTime: time.Now().Unix()}
+	table := model.Article{Uid: uid, CreateTime: time.Now().Unix(), UpdateTime: time.Now().Unix(), Device: detectDevice(ctx.Request.UserAgent())}
 	allowFields := append([]any{}, articleAllowFieldsSlice...)
 	root := this.meta.root(ctx)
 	if root {
@@ -619,6 +634,12 @@ func (this *Article) update(ctx *gin.Context) {
 	}
 
 	async.Set("last_update", time.Now().Unix())
+
+	// 编辑次数：只有「已发布」的文章再次保存才算一次编辑（草稿期间的反复保存不算），
+	// 前台据此显示「已编辑」。并发下可能少计，这里不需要精确值。
+	if prevStatus == 1 {
+		async.Set("edit_count", cast.ToInt(findResult["edit_count"])+1)
+	}
 
 	// 取一次更新内容：Update 与「审核状态变化」判定共用
 	payload := async.Result()
