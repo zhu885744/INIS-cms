@@ -655,6 +655,8 @@ func createAuthRules() (result []AuthRules) {
 				"path=captcha&name=滑块验证&type=common",
 				// 实时连接状态：前端建连前探测是否被管理员关闭（公开，未登录也要能读）
 				"path=socket&name=实时连接状态&type=common",
+				// 我的发布趋势：创作中心的近 7 天小柱图，只能看自己的数据
+				"path=my-trend&name=我的发布趋势&type=login",
 			},
 			"POST": {
 				"path=login&name=传统和加密登录&type=common",

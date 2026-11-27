@@ -5,6 +5,10 @@ import { call, devService } from './request'
 export const getSocketStatus = () =>
   call('comm', 'socket', { method: 'GET', config: { silent: true, dedupe: false } })
 
+// 我的发布趋势：近 N 天每天的文章 / 动态数量（创作中心的小柱图）
+export const getMyTrend = (days = 7) =>
+  call('comm', 'my-trend', { method: 'GET', params: { days }, config: { silent: true } })
+
 /**
  * 获取服务器 unix 时间戳（用于加密盐派生）
  * 接口路径为 /dev/info/time（不带 /api 前缀，属于 dev 类接口）

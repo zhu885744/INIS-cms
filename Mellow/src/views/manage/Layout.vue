@@ -59,10 +59,6 @@
           <i class="bi bi-person" />
           <span class="manage-nav-text">用户中心</span>
         </RouterLink>
-        <RouterLink v-if="isAdmin" to="/admin" class="manage-nav-item">
-          <i class="bi bi-shield-lock" />
-          <span class="manage-nav-text">管理后台</span>
-        </RouterLink>
         <RouterLink to="/" class="manage-nav-item">
           <i class="bi bi-box-arrow-left" />
           <span class="manage-nav-text">返回前台</span>
@@ -128,7 +124,6 @@ import { computed, ref, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { useUserStore } from '@/stores/user'
-import { canEnterAdmin as helperCanEnterAdmin } from '@/utils/helper'
 
 const defaultAvatar = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 80"><circle cx="40" cy="40" r="40" fill="%23e8e6dd"/><text x="50%25" y="55%25" text-anchor="middle" font-size="36" fill="%238a8a82" font-family="serif">用</text></svg>'
 
@@ -137,9 +132,6 @@ const userStore = useUserStore()
 const { user } = storeToRefs(userStore)
 
 const collapsed = ref(false)
-
-// 有任意后台页面权限（或超管 / 组 key=admin）时显示后台入口
-const isAdmin = computed(() => helperCanEnterAdmin(user.value))
 
 // 精确判断高亮：写文章/编辑 与 我的文章 路径有前缀重叠，不能用 active-class
 const isWrite = computed(() => /^\/manage\/posts\/(write|edit)/.test(route.path))

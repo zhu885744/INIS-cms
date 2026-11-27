@@ -30,8 +30,9 @@ func (this *Comm) IGET(ctx *gin.Context) {
 	method := strings.ToLower(ctx.Param("method"))
 
 	allow := map[string]any{
-		"captcha": this.captcha, // 滑块验证题（发送验证码被判定为频繁时前端弹窗用）
-		"socket":  this.socket,  // 实时连接是否可用（前端建连前探测）
+		"captcha":  this.captcha, // 滑块验证题（发送验证码被判定为频繁时前端弹窗用）
+		"socket":   this.socket,  // 实时连接是否可用（前端建连前探测）
+		"my-trend": this.myTrend, // 我的发布趋势（创作中心的趋势小柱图）
 	}
 	err := this.call(allow, method, ctx)
 
@@ -58,6 +59,86 @@ func (this *Comm) socket(ctx *gin.Context) {
 	this.json(ctx, gin.H{
 		"enabled": enabled,
 		"message": message,
+	}, facade.Lang(ctx, "查询成功！"), 200)
+}
+
+// myTrend - 当前用户近 N 天的发布量（文章 / 动态）
+//
+// 创作中心的「近 7 天发布」小柱图用：只统计自己发布的内容（含草稿与待审核，
+// 那是「我写了多少」的口径），软删除的不计入。
+func (this *Comm) myTrend(ctx *gin.Context) {
+
+	uid := this.user(ctx).Id
+	if uid <= 0 {
+		this.json(ctx, nil, facade.Lang(ctx, "请先登录！"), 401)
+		return
+	}
+
+	params := this.params(ctx, map[string]any{"days": 7})
+	days := cast.ToInt(params["days"])
+	if days <= 0 {
+		days = 7
+	}
+	if days > 30 {
+		days = 30
+	}
+
+	// 以「今天 00:00」为终点往前推 days-1 天（按服务器本地时区切天）
+	now := time.Now()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	start := today.AddDate(0, 0, -(days - 1))
+
+	type dailyRow struct {
+		Day   string
+		Total int
+	}
+
+	// create_time 存的是 Unix 秒：FROM_UNIXTIME 后按天分组。
+	//
+	// 两个坑：
+	//  1. 必须用 DATE_FORMAT 而不是 DATE：MySQL 的 DATE 类型在驱动开启 parseTime 时
+	//     会被扫成 time.Time，扫进 string 字段直接报 unsupported Scan；
+	//  2. Scan 的错误不能吞：出错时上面的问题会表现为「全是 0」，完全查不出原因。
+	// 另外 delete_time 用「= 0 或 IS NULL」兼容老数据（历史行可能是 NULL 而非 0）。
+	countByDay := func(dest any) map[string]int {
+		var rows []dailyRow
+		err := facade.DB.Drive().Model(dest).
+			Select("DATE_FORMAT(FROM_UNIXTIME(create_time), '%Y-%m-%d') AS day, COUNT(*) AS total").
+			Where("uid = ? AND create_time >= ? AND (delete_time = 0 OR delete_time IS NULL)", uid, start.Unix()).
+			Group("day").
+			Scan(&rows).Error
+
+		if err != nil {
+			if facade.Log != nil {
+				facade.Log.Warn(map[string]any{"error": err.Error()}, "统计发布趋势失败")
+			}
+			return map[string]int{}
+		}
+
+		result := make(map[string]int, len(rows))
+		for _, row := range rows {
+			result[row.Day] = row.Total
+		}
+		return result
+	}
+
+	articles := countByDay(&model.Article{})
+	moments := countByDay(&model.Moments{})
+
+	list := make([]map[string]any, 0, days)
+	for index := 0; index < days; index++ {
+		key := start.AddDate(0, 0, index).Format("2006-01-02")
+		list = append(list, map[string]any{
+			"date":    key,
+			"article": articles[key],
+			"moment":  moments[key],
+			"total":   articles[key] + moments[key],
+		})
+	}
+
+	this.json(ctx, gin.H{
+		"days": days,
+		"list": list,
 	}, facade.Lang(ctx, "查询成功！"), 200)
 }
 
