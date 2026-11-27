@@ -2,9 +2,9 @@
 set -e
 
 # 配置参数（根据实际情况修改）
-REMOTE_ZIP_URL="https://cdn.zhuxu.asia/inis-system/inisv1.0.zip"  # 压缩包下载地址
+REMOTE_ZIP_URL="https://cdn.zhuxu.asia/inis-system/inis.zip"  # 压缩包下载地址
 DEPLOY_DIR="/opt/inis"                       # 部署目录
-BINARY_NAME="inis_linux_amd64"               # 可执行文件名
+BINARY_NAME="inis"               # 可执行文件名
 SERVICE_NAME="inis"                          # 系统服务名称
 APP_PORT="8642"                              # 应用端口
 
