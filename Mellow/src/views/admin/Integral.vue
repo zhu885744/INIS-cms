@@ -2124,6 +2124,16 @@ onMounted(async () => {
   color: var(--text-muted);
   border-bottom: 1px solid var(--border);
 }
+/* 表头默认左对齐；数字列与操作列跟随表体一起右对齐，
+ * 否则「单次积分 / 每日上限」的表头在左、数字在右，看着完全对不上点位 */
+.rule-table th.cell-num,
+.rule-table th.cell-act {
+  text-align: right;
+}
+.rule-table th.cell-num {
+  width: 110px;
+  white-space: nowrap;
+}
 .rule-table td {
   padding: 10px;
   border-bottom: 1px dashed var(--border-soft);

@@ -856,60 +856,146 @@ h1, h2, h3 {
   text-align: center;
 }
 
+/* 附件卡片：四周边框 + 圆角 + 卡片底色。
+ * 边框用 --border（不是 --border-soft）：卡片底色和正文背景很接近，
+ * 淡边框会让底边看起来「没有线」。再加一层极轻的落影把底边托住。 */
 .markdown-file {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin: 14px 0;
-  padding: 10px 12px;
-  border: 1px solid var(--border-soft);
-  border-radius: 10px;
+  gap: 12px;
+  margin: 16px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
   background: var(--bg-card);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
   text-decoration: none;
-  transition: border-color 0.15s, transform 0.15s;
+  transition: border-color 0.18s, box-shadow 0.18s, transform 0.18s;
 }
 .markdown-file:hover {
-  border-color: var(--primary);
+  border-color: var(--primary-soft);
+  box-shadow: 0 8px 20px -14px rgba(0, 0, 0, 0.45);
   transform: translateY(-1px);
   text-decoration: none;
 }
+.markdown-file:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+/* 图标：默认主色，按附件类型换一套「浅底 + 深字」的语气色。
+ * 颜色写死不跟主题变量走：PDF 永远是红的、Excel 永远是绿的，用户一眼能认。 */
 .markdown-file-icon {
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 38px;
-  height: 38px;
-  border-radius: 9px;
+  width: 42px;
+  height: 42px;
+  border-radius: 11px;
   background: var(--accent-wash);
   color: var(--primary-deep);
-  font-size: 17px;
+  font-size: 19px;
+  transition: transform 0.18s;
 }
+.markdown-file:hover .markdown-file-icon {
+  transform: scale(1.04);
+}
+.markdown-file[data-type="pdf"] .markdown-file-icon {
+  background: rgba(217, 83, 79, 0.13);
+  color: #d9534f;
+}
+.markdown-file[data-type="doc"] .markdown-file-icon {
+  background: rgba(47, 111, 208, 0.13);
+  color: #2f6fd0;
+}
+.markdown-file[data-type="xls"] .markdown-file-icon {
+  background: rgba(47, 143, 91, 0.13);
+  color: #2f8f5b;
+}
+.markdown-file[data-type="ppt"] .markdown-file-icon {
+  background: rgba(217, 122, 43, 0.13);
+  color: #d97a2b;
+}
+.markdown-file[data-type="zip"] .markdown-file-icon {
+  background: rgba(122, 91, 208, 0.13);
+  color: #7a5bd0;
+}
+.markdown-file[data-type="image"] .markdown-file-icon {
+  background: rgba(31, 154, 168, 0.13);
+  color: #1f9aa8;
+}
+.markdown-file[data-type="video"] .markdown-file-icon {
+  background: rgba(184, 84, 122, 0.13);
+  color: #b8547a;
+}
+.markdown-file[data-type="audio"] .markdown-file-icon {
+  background: rgba(138, 111, 176, 0.13);
+  color: #8a6fb0;
+}
+.markdown-file[data-type="app"] .markdown-file-icon {
+  background: rgba(96, 110, 128, 0.13);
+  color: #5b6878;
+}
+
 .markdown-file-main {
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
 }
 .markdown-file-name {
-  font-size: 13px;
+  font-size: 13.5px;
+  font-weight: 600;
   color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .markdown-file-meta {
-  font-size: 11px;
+  font-size: 11.5px;
   color: var(--text-light);
+  /* 体积数字用等宽，多个附件上下排列时位数对得齐 */
+  font-variant-numeric: tabular-nums;
 }
+
+/* 下载入口做成胶囊：平时淡底主色字，悬停整体变实底，明确「这里可以点」 */
 .markdown-file-action {
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
+  padding: 5px 11px;
   font-size: 12px;
+  font-weight: 600;
   color: var(--primary-deep);
+  background: var(--accent-wash);
+  border-radius: 999px;
+  transition: background-color 0.18s, color 0.18s;
+}
+.markdown-file:hover .markdown-file-action {
+  background: var(--primary);
+  color: #fff;
+}
+
+/* 窄屏：只留图标，把宽度让给文件名 */
+@media (max-width: 520px) {
+  .markdown-file {
+    gap: 10px;
+    padding: 10px 12px;
+  }
+  .markdown-file-icon {
+    width: 38px;
+    height: 38px;
+    font-size: 17px;
+  }
+  .markdown-file-action {
+    padding: 6px;
+  }
+  .markdown-file-action span {
+    display: none;
+  }
 }
 
 /* ========== 话题 #话题#（v-html / markdown 注入，需全局） ========== */

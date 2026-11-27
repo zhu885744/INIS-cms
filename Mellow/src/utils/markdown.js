@@ -194,6 +194,31 @@ function mediaFileName(url) {
 }
 
 /**
+ * 附件类型 → 图标与配色语气
+ *
+ * type 只用于 CSS 的 data-type 选择器（受控枚举，不直接拼用户输入），
+ * 图标用 Bootstrap Icons 的 file-earmark-* 系列。
+ */
+const FILE_TYPE_MAP = [
+  { exts: ['pdf'], icon: 'bi-file-earmark-pdf', type: 'pdf' },
+  { exts: ['doc', 'docx', 'rtf', 'odt'], icon: 'bi-file-earmark-word', type: 'doc' },
+  { exts: ['xls', 'xlsx', 'csv', 'ods'], icon: 'bi-file-earmark-excel', type: 'xls' },
+  { exts: ['ppt', 'pptx', 'odp'], icon: 'bi-file-earmark-ppt', type: 'ppt' },
+  { exts: ['zip', 'rar', '7z', 'tar', 'gz', 'tgz', 'bz2', 'xz'], icon: 'bi-file-earmark-zip', type: 'zip' },
+  { exts: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'ico', 'avif', 'heic'], icon: 'bi-file-earmark-image', type: 'image' },
+  { exts: ['mp4', 'mov', 'webm', 'mkv', 'avi', 'flv'], icon: 'bi-file-earmark-play', type: 'video' },
+  { exts: ['mp3', 'wav', 'flac', 'm4a', 'aac', 'ogg'], icon: 'bi-file-earmark-music', type: 'audio' },
+  { exts: ['txt', 'md', 'log', 'json', 'xml', 'yaml', 'yml', 'ini', 'conf'], icon: 'bi-file-earmark-text', type: 'text' },
+  { exts: ['apk', 'exe', 'msi', 'dmg', 'deb', 'rpm'], icon: 'bi-file-earmark-binary', type: 'app' }
+]
+
+/** 按扩展名取图标与类型标识；未知类型给通用下载图标 */
+function fileTypeMeta(ext) {
+  const hit = FILE_TYPE_MAP.find((item) => item.exts.includes(ext))
+  return hit || { icon: 'bi-file-earmark-arrow-down', type: 'file' }
+}
+
+/**
  * 媒体 / 附件卡片 HTML
  *
  * 用 span / a 而不是 div：短代码常写在一行文字里，markdown-it 会把它包进 <p>，
@@ -246,16 +271,20 @@ function renderMedia(kind, url, caption, meta) {
   const fileName = caption || urlName || '附件'
   // 扩展名只从 URL 里取：标题可能是任意中文，拿它 split('.') 会得出奇怪的类型
   const ext = urlName.includes('.') ? (urlName.split('.').pop() || '').toLowerCase() : ''
-  const metaText = [meta, ext].filter(Boolean).join(' · ')
+  // 扩展名转大写做徽标（PDF / ZIP 比 pdf / zip 更醒目），与体积一起放在第二行
+  const metaText = [meta, ext ? ext.toUpperCase() : ''].filter(Boolean).join(' · ')
+  const info = fileTypeMeta(ext)
+  const safeName = md.utils.escapeHtml(fileName)
 
   return (
-    `<a class="markdown-file" href="${src}" target="_blank" rel="noopener noreferrer" download>` +
-    `<span class="markdown-file-icon"><i class="bi bi-file-earmark-arrow-down"></i></span>` +
+    `<a class="markdown-file" data-type="${info.type}" href="${src}" target="_blank" rel="noopener noreferrer" download` +
+    ` title="下载 ${safeName}" aria-label="下载 ${safeName}">` +
+    `<span class="markdown-file-icon"><i class="bi ${info.icon}"></i></span>` +
     `<span class="markdown-file-main">` +
-    `<span class="markdown-file-name">${md.utils.escapeHtml(fileName)}</span>` +
-    `<span class="markdown-file-meta">${md.utils.escapeHtml(metaText)}</span>` +
+    `<span class="markdown-file-name">${safeName}</span>` +
+    `<span class="markdown-file-meta">${md.utils.escapeHtml(metaText || '附件')}</span>` +
     `</span>` +
-    `<span class="markdown-file-action"><i class="bi bi-download"></i> 下载</span>` +
+    `<span class="markdown-file-action"><i class="bi bi-download"></i><span>下载</span></span>` +
     `</a>`
   )
 }
